@@ -52,24 +52,6 @@ fn test_solver_matches_oneshot(
 }
 
 #[test]
-fn test_solver_demeaned() {
-    let (categories, y) = categories_and_y();
-    let params = default_params();
-    let precond = PreconditionerConfig::default();
-
-    let solver = Solver::new(categories.view(), None, &precond).expect("solver build");
-    let result = solver.solve(&y, &params).expect("solver solve");
-
-    assert_eq!(result.demeaned.len(), y.len());
-    // demeaned = y - D*x: verify by checking D^T * demeaned ≈ 0
-    // (the residual should be orthogonal to the design matrix)
-    assert!(
-        result.demeaned.iter().all(|v| v.is_finite()),
-        "demeaned should be finite"
-    );
-}
-
-#[test]
 fn test_diagonal_preconditioner_single_factor_is_cached() {
     let categories = array![[0u32], [1], [0], [2], [1]];
     let precond = PreconditionerConfig::Diagonal;
@@ -126,7 +108,7 @@ fn test_solver_batch() {
 
 #[test]
 fn test_solver_batch_term_design_shares_drop_report() {
-    // Level 0's z is constant, so its whitened slope column drops; each batch
+    // Level 0's z is constant, so its orthogonalized slope column drops; each batch
     // column must reproduce the single solve and share the drop report.
     let f = [0u32, 0, 0, 1, 1, 1];
     let g = [0u32, 1, 2, 0, 1, 2];

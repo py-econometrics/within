@@ -1,44 +1,12 @@
-//! Domain layer: [`Design`] (design-matrix metadata) and factor-pair [`Subdomain`] construction.
+//! Caller factor labels ⇄ compact internal level positions.
 
-mod effect;
-pub(crate) mod factor_pairs;
-mod level_moments;
-mod prepared;
-mod reparam;
-mod row_index;
-mod scatter_split;
-
-pub(crate) use prepared::{PreparedDesign, PreparedTerm};
-use reparam::TermReparam;
-pub(crate) use row_index::RowIndex;
-pub(crate) use scatter_split::{LevelSlots, ScatterSplit};
-
-/// Rows from which a sweep over observations runs in parallel.
-pub(crate) const PAR_THRESHOLD: usize = 10_000;
-
-pub use effect::Effect;
-
-pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
-
-use crate::channel::Channel;
-use crate::BuildError;
-use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 use rustc_hash::FxBuildHasher;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::ops::Range;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
 use std::sync::Arc;
-
-/// What one coefficient column of a term multiplies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Column {
-    Intercept,
-    /// The term's slope `j`.
-    Slope(usize),
-}
 
 /// Mapping between caller-visible factor labels and compact numerical positions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,18 +31,9 @@ impl FactorEncoding {
 
     // Inlined into `build`, its label loops lose registers and reload pointers from the stack.
     #[inline(never)]
-    fn encode_labels(labels: Cow<'_, [u32]>) -> EncodedFactor<'_> {
-        if labels.is_empty() {
-            return EncodedFactor {
-                encoding: Self::identity(0),
-                levels: labels,
-                sorted: true,
-            };
-        }
+    pub(in crate::design) fn encode_labels(labels: Cow<'_, [u32]>) -> EncodedFactor<'_> {
         match identify_label_layout(&labels) {
-            LabelLayout::Contiguous { min, max, sorted } => {
-                EncodedFactor::contiguous(labels, min, max, sorted)
-            }
+            LabelLayout::Contiguous { min, max } => EncodedFactor::contiguous(labels, min, max),
             LabelLayout::SortedWithGaps => EncodedFactor::sorted_gaps(&labels),
             LabelLayout::UnsortedDense { distinct_labels } => {
                 EncodedFactor::dense(&labels, distinct_labels)
@@ -116,27 +75,23 @@ impl FactorEncoding {
 }
 
 /// A factor's level encoding and level column (the input itself if already positions).
-struct EncodedFactor<'a> {
-    encoding: FactorEncoding,
-    levels: Cow<'a, [u32]>,
-    /// `levels` is non-decreasing.
-    sorted: bool,
+pub(in crate::design) struct EncodedFactor<'a> {
+    pub(in crate::design) encoding: FactorEncoding,
+    pub(in crate::design) levels: Cow<'a, [u32]>,
 }
 
 impl<'a> EncodedFactor<'a> {
     /// Every value in `min..=max` occurs, so a label's internal position is `label - min`.
-    fn contiguous(labels: Cow<'a, [u32]>, min: u32, max: u32, sorted: bool) -> Self {
+    fn contiguous(labels: Cow<'a, [u32]>, min: u32, max: u32) -> Self {
         if min == 0 {
             return Self {
                 encoding: FactorEncoding::identity(max as usize + 1),
                 levels: labels,
-                sorted,
             };
         }
         Self {
             encoding: FactorEncoding::integer((min..=max).into_par_iter().collect()),
             levels: Cow::Owned(labels.par_iter().map(|&label| label - min).collect()),
-            sorted,
         }
     }
 }
@@ -192,7 +147,6 @@ impl EncodedFactor<'static> {
         Self {
             encoding: FactorEncoding::integer(caller_labels),
             levels: Cow::Owned(positions),
-            sorted: true,
         }
     }
 
@@ -220,7 +174,6 @@ impl EncodedFactor<'static> {
         EncodedFactor {
             encoding: FactorEncoding::integer(distinct_labels),
             levels: Cow::Owned(positions),
-            sorted: false,
         }
     }
 
@@ -279,104 +232,16 @@ impl EncodedFactor<'static> {
         EncodedFactor {
             encoding: FactorEncoding::integer(caller_labels),
             levels: Cow::Owned(positions),
-            sorted: false,
         }
     }
-}
-
-/// One term's coefficients and rows: column `c` of `level` lives at `offset + c · n_levels + level`.
-#[derive(Debug, Clone)]
-pub(crate) struct Term<'a> {
-    pub(crate) encoding: FactorEncoding,
-    pub(crate) offset: usize,
-    /// Column 0 is an intercept; the slopes follow it.
-    pub(crate) intercept: bool,
-    /// Internal level position of every observation, in the design's row order.
-    levels: Cow<'a, [u32]>,
-    /// The rows of each level, as the scatter-add splits them.
-    pub(crate) split: ScatterSplit,
-    /// Raw slopes in coefficient-column order, before whitening.
-    slopes: Vec<Cow<'a, [f64]>>,
-}
-
-impl Term<'_> {
-    pub(crate) fn n_levels(&self) -> usize {
-        self.encoding.n_levels()
-    }
-
-    pub(crate) fn has_slopes(&self) -> bool {
-        !self.slopes.is_empty()
-    }
-
-    pub(crate) fn n_columns(&self) -> usize {
-        self.intercept as usize + self.slopes.len()
-    }
-
-    pub(crate) fn n_dofs(&self) -> usize {
-        self.n_columns() * self.n_levels()
-    }
-
-    /// This term's coefficients in the global DOF vector.
-    pub(crate) fn dofs(&self) -> Range<usize> {
-        self.offset..self.offset + self.n_dofs()
-    }
-
-    /// Coefficient column `column`'s `n_levels` slots in the global DOF vector.
-    pub(crate) fn column_dofs(&self, column: usize) -> Range<usize> {
-        let start = self.offset + column * self.n_levels();
-        start..start + self.n_levels()
-    }
-
-    /// Coefficient column of slope `j`; the intercept, when present, comes first.
-    pub(crate) fn slope_column(&self, j: usize) -> usize {
-        self.intercept as usize + j
-    }
-
-    /// Column `index` in layout order: the inverse of [`slope_column`](Self::slope_column).
-    pub(crate) fn column(&self, index: usize) -> Column {
-        debug_assert!(index < self.n_columns());
-        match index.checked_sub(self.intercept as usize) {
-            None => Column::Intercept,
-            Some(j) => Column::Slope(j),
-        }
-    }
-
-    pub(crate) fn levels(&self) -> &[u32] {
-        &self.levels
-    }
-
-    /// Raw slopes in coefficient-column order.
-    pub(crate) fn raw_slopes(&self) -> impl ExactSizeIterator<Item = &[f64]> {
-        self.slopes.iter().map(|slope| &**slope)
-    }
-
-    fn into_owned(self) -> Term<'static> {
-        Term {
-            encoding: self.encoding,
-            offset: self.offset,
-            intercept: self.intercept,
-            levels: Cow::Owned(self.levels.into_owned()),
-            split: self.split,
-            slopes: self
-                .slopes
-                .into_iter()
-                .map(|slope| Cow::Owned(slope.into_owned()))
-                .collect(),
-        }
-    }
-}
-
-/// The Gram weight of row `obs`: the operator applies `s`, so its normal matrix carries `s²`.
-pub(crate) fn row_weight(sqrt_weights: Option<&[f64]>, obs: usize) -> f64 {
-    sqrt_weights.map_or(1.0, |s| s[obs] * s[obs])
 }
 
 const LABEL_CHUNK: usize = 65_536;
 
 /// Label layout used to select an encoding strategy.
 enum LabelLayout {
-    /// Every value in `min..=max` occurs; `sorted` indicates non-decreasing input.
-    Contiguous { min: u32, max: u32, sorted: bool },
+    /// Every value in `min..=max` occurs.
+    Contiguous { min: u32, max: u32 },
     /// Non-decreasing labels with missing values between their minimum and maximum.
     SortedWithGaps,
     /// Unsorted labels with gaps and a range no wider than the observation count.
@@ -395,7 +260,6 @@ fn identify_label_layout(labels: &[u32]) -> LabelLayout {
         Some(false) => LabelLayout::Contiguous {
             min: labels[0],
             max: labels[labels.len() - 1],
-            sorted: true,
         },
         // Non-decreasing with gaps.
         Some(true) => LabelLayout::SortedWithGaps,
@@ -413,11 +277,7 @@ fn identify_label_layout(labels: &[u32]) -> LabelLayout {
                 LabelLayout::UnsortedDense { distinct_labels }
             } else {
                 // Unsorted contiguous labels
-                LabelLayout::Contiguous {
-                    min,
-                    max,
-                    sorted: false,
-                }
+                LabelLayout::Contiguous { min, max }
             }
         }
     }
@@ -455,10 +315,6 @@ fn is_non_decreasing_with_gaps(labels: &[u32]) -> Option<bool> {
 /// Every label must lie in `min..=max`, and the range must be no wider than the column.
 fn get_distinct_labels(labels: &[u32], min: u32, max: u32) -> Option<Vec<u32>> {
     let width = (max - min) as usize + 1;
-    debug_assert!(
-        width <= labels.len(),
-        "a table over the range would outgrow the column"
-    );
     let present: Vec<AtomicBool> = (0..width)
         .into_par_iter()
         .map(|_| AtomicBool::new(false))
@@ -501,228 +357,9 @@ fn get_distinct_labels(labels: &[u32], min: u32, max: u32) -> Option<Vec<u32>> {
     )
 }
 
-/// Group `k` of the counted `keys` owns `offsets[k]..offsets[k + 1]`.
-pub(crate) fn offsets(n_keys: usize, keys: impl IntoIterator<Item = usize>) -> Vec<usize> {
-    let mut offsets = vec![0usize; n_keys + 1];
-    for k in keys {
-        offsets[k + 1] += 1;
-    }
-    for i in 1..offsets.len() {
-        offsets[i] += offsets[i - 1];
-    }
-    offsets
-}
-
-/// Fixed-effects design: its terms; clones share rows.
-#[derive(Clone, Debug)]
-pub struct Design<'a> {
-    /// Rows in internal order (caller's, or an owned locality-sorted copy).
-    pub(crate) terms: Arc<Vec<Term<'a>>>,
-    pub(crate) n_obs: usize,
-    pub(crate) n_dofs: usize,
-    /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
-    pub(crate) obs_perm: Option<Arc<RowIndex>>,
-    /// The term with the most DOFs, ties to the last: the sort key and the eliminated term.
-    pub(crate) dominant: usize,
-}
-
-impl<'a> Design<'a> {
-    /// Lower effect terms into a design, laid out term-major (`offset[t] + c · L_t + level`).
-    pub fn new(effects: impl IntoIterator<Item = Effect<'a>>) -> Result<Self, BuildError> {
-        Self::build(effects.into_iter().collect())
-    }
-
-    /// Build an intercept-only design from an observation-major categories matrix.
-    pub fn from_categories(categories: ArrayView2<'a, u32>) -> Result<Self, BuildError> {
-        // Gather strided (C-order) columns once so every downstream read is contiguous.
-        let effects = (0..categories.ncols())
-            .map(|factor| {
-                let column = categories.index_axis_move(Axis(1), factor);
-                let levels = match column.to_slice() {
-                    Some(values) => Cow::Borrowed(values),
-                    None => Cow::Owned(column.to_vec()),
-                };
-                Effect {
-                    levels,
-                    intercept: true,
-                    slopes: Vec::new(),
-                }
-            })
-            .collect();
-        Self::build(effects)
-    }
-
-    fn build(effects: Vec<Effect<'a>>) -> Result<Self, BuildError> {
-        let n_obs = effects.first().map_or(0, |e| e.levels.len());
-        for (column, e) in effects.iter().enumerate() {
-            if e.levels.len() != n_obs {
-                return Err(BuildError::ObservationCountMismatch {
-                    column,
-                    expected: n_obs,
-                    got: e.levels.len(),
-                });
-            }
-        }
-        if n_obs == 0 {
-            return Err(BuildError::EmptyObservations);
-        }
-
-        let mut factors: Vec<_> = effects
-            .into_iter()
-            .map(|e| {
-                (
-                    FactorEncoding::encode_labels(e.levels),
-                    e.intercept,
-                    e.slopes,
-                )
-            })
-            .collect();
-        let dofs: Vec<usize> = factors
-            .iter()
-            .map(|(f, intercept, slopes)| {
-                (*intercept as usize + slopes.len()) * f.encoding.n_levels()
-            })
-            .collect();
-        let n_dofs: usize = dofs.iter().sum();
-        // Rejected here rather than left to panic in `to_u32`.
-        if u32::try_from(n_dofs).is_err() {
-            return Err(BuildError::DofSpaceExceedsU32 { n_dofs });
-        }
-
-        let dominant = (0..dofs.len())
-            .max_by_key(|&t| dofs[t])
-            .expect("observations imply an effect");
-        // Sort by the dominant term so its gather/scatter runs sequentially.
-        let mut sorted_offsets = vec![None; factors.len()];
-        let d = &factors[dominant].0;
-        let obs_perm = if !d.sorted {
-            let (offsets, perm) = RowIndex::argsort(&d.levels, d.encoding.n_levels());
-            sorted_offsets[dominant] = Some(offsets);
-            // Factors nested in the dominant one come out sorted and need no row index.
-            for (f, _, _) in factors.iter_mut() {
-                let levels = perm.gather(&f.levels);
-                f.sorted = levels.is_sorted();
-                f.levels = Cow::Owned(levels);
-            }
-            // Level columns before any slope: interleaving them measured +2–4% here.
-            for slope in factors.iter_mut().flat_map(|(_, _, slopes)| slopes) {
-                *slope = Cow::Owned(perm.gather(slope));
-            }
-            Some(Arc::new(perm))
-        } else {
-            None
-        };
-
-        let term_offsets = dofs
-            .iter()
-            .scan(0, |next, &n| Some(std::mem::replace(next, *next + n)));
-        let terms = factors
-            .into_par_iter()
-            .zip(sorted_offsets)
-            .zip(term_offsets.collect::<Vec<_>>())
-            .map(|(((f, intercept, slopes), sorted_offsets), offset)| {
-                let n_levels = f.encoding.n_levels();
-                Term {
-                    split: match sorted_offsets {
-                        Some(offsets) => ScatterSplit::sorted(offsets),
-                        None => ScatterSplit::new(&f.levels, n_levels, f.sorted),
-                    },
-                    encoding: f.encoding,
-                    offset,
-                    intercept,
-                    levels: f.levels,
-                    slopes,
-                }
-            })
-            .collect();
-
-        Ok(Design {
-            terms: Arc::new(terms),
-            n_obs,
-            n_dofs,
-            obs_perm,
-            dominant,
-        })
-    }
-
-    /// Convert every column to owned, dropping ties to caller buffers.
-    pub fn into_owned(self) -> Design<'static> {
-        let terms = Arc::unwrap_or_clone(self.terms);
-        Design {
-            terms: Arc::new(terms.into_iter().map(Term::into_owned).collect()),
-            n_obs: self.n_obs,
-            n_dofs: self.n_dofs,
-            obs_perm: self.obs_perm,
-            dominant: self.dominant,
-        }
-    }
-
-    /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; borrows when unpermuted.
-    pub(crate) fn permute_obs_in<'v>(&self, v: &'v [f64]) -> Cow<'v, [f64]> {
-        match &self.obs_perm {
-            None => Cow::Borrowed(v),
-            Some(perm) => Cow::Owned(perm.gather(v)),
-        }
-    }
-
-    /// Internal order → caller order: `out[obs_perm[k]] = v[k]`.
-    pub(crate) fn permute_obs_out(&self, v: Vec<f64>) -> Vec<f64> {
-        match &self.obs_perm {
-            None => v,
-            Some(perm) => perm.scatter(&v),
-        }
-    }
-
-    /// Number of categorical factors in the design.
-    #[inline]
-    pub fn n_factors(&self) -> usize {
-        self.terms.len()
-    }
-
-    /// The term's coefficient columns in layout order.
-    pub(crate) fn channels(&self, term: usize) -> impl Iterator<Item = Channel> + '_ {
-        (0..self.terms[term].n_columns()).map(move |column| Channel { term, column })
-    }
-
-    /// What `channel` multiplies.
-    pub(crate) fn column(&self, channel: Channel) -> Column {
-        self.terms[channel.term].column(channel.column)
-    }
-
-    /// Number of observations (rows of D).
-    #[inline]
-    pub fn n_obs(&self) -> usize {
-        self.n_obs
-    }
-
-    /// Total degrees of freedom (columns of D).
-    #[inline]
-    pub fn n_dofs(&self) -> usize {
-        self.n_dofs
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    impl Design<'static> {
-        pub(crate) fn from_levels_for_test(columns: Vec<Vec<u32>>) -> Self {
-            let effects = columns
-                .iter()
-                .map(|c| Effect::new(c, true, []).expect("intercept effect"));
-            Design::new(effects).expect("valid design").into_owned()
-        }
-    }
-
-    #[test]
-    fn build_compacts_large_integer_label() {
-        let design = Design::from_levels_for_test(vec![vec![u32::MAX]]);
-
-        assert_eq!(design.n_dofs, 1);
-        assert_eq!(design.terms[0].levels(), &[0]);
-        assert_eq!(design.terms[0].encoding.label(0), Some(u32::MAX));
-    }
 
     #[test]
     fn integer_factor_encoding_round_trips() {
@@ -742,85 +379,41 @@ mod tests {
 
     #[test]
     fn encode_labels_preserves_identity_encoding() {
-        let EncodedFactor {
-            encoding,
-            levels,
-            sorted,
-        } = FactorEncoding::encode_labels(Cow::Borrowed(&[2, 0, 1, 2]));
+        let EncodedFactor { encoding, levels } =
+            FactorEncoding::encode_labels(Cow::Borrowed(&[2, 0, 1, 2]));
 
         assert_eq!(encoding, FactorEncoding::identity(3));
         assert!(matches!(levels, Cow::Borrowed([2, 0, 1, 2])));
-        assert!(!sorted);
     }
 
     #[test]
     fn encode_labels_compacts_bounded_gappy_labels() {
         // Range width = 3 and n_obs = 3, so this exercises the presence-table path.
-        let EncodedFactor {
-            encoding,
-            levels,
-            sorted,
-        } = FactorEncoding::encode_labels(Cow::Borrowed(&[2, 0, 2]));
+        let EncodedFactor { encoding, levels } =
+            FactorEncoding::encode_labels(Cow::Borrowed(&[2, 0, 2]));
 
         assert_eq!(encoding, FactorEncoding::integer(vec![0, 2]));
         assert_eq!(*levels, [1, 0, 1]);
-        assert!(!sorted);
     }
 
     #[test]
     fn encode_labels_compacts_shifted_bounded_range() {
-        let EncodedFactor {
-            encoding,
-            levels,
-            sorted,
-        } = FactorEncoding::encode_labels(Cow::Borrowed(&[1_000_000, 1_000_001, 1_000_002]));
+        let EncodedFactor { encoding, levels } =
+            FactorEncoding::encode_labels(Cow::Borrowed(&[1_000_000, 1_000_001, 1_000_002]));
 
         assert_eq!(
             encoding,
             FactorEncoding::integer(vec![1_000_000, 1_000_001, 1_000_002])
         );
         assert_eq!(*levels, [0, 1, 2]);
-        assert!(sorted);
     }
 
     #[test]
     fn encode_labels_compacts_large_span_without_span_allocation() {
-        let EncodedFactor {
-            encoding,
-            levels,
-            sorted,
-        } = FactorEncoding::encode_labels(Cow::Borrowed(&[u32::MAX, 7, u32::MAX]));
+        let EncodedFactor { encoding, levels } =
+            FactorEncoding::encode_labels(Cow::Borrowed(&[u32::MAX, 7, u32::MAX]));
 
         assert_eq!(encoding, FactorEncoding::integer(vec![7, u32::MAX]));
         assert_eq!(*levels, [1, 0, 1]);
-        assert!(!sorted);
-    }
-
-    #[test]
-    fn new_lays_out_slope_terms_term_major() {
-        // Sorted levels keep the locality sort a no-op, so columns stay in caller order.
-        let f0 = [0u32, 0, 1, 1];
-        let f1 = [0u32, 2, 1, 0];
-        let z0 = [1.0, 2.0, 3.0, 4.0];
-        let z1 = [5.0, 6.0, 7.0, 8.0];
-        let effects = vec![
-            Effect::new(&f0, true, [&z0[..], &z1[..]]).unwrap(),
-            Effect::new(&f1, true, []).unwrap(),
-            Effect::new(&f0, false, [&z1[..]]).unwrap(),
-        ];
-        let design = Design::new(effects).unwrap();
-
-        // term 0: [intercept, z0, z1] over 2 levels; term 1: intercept over 3; term 2: slope.
-        let layout = |t: &Term| (t.offset, t.intercept, t.n_columns(), t.n_dofs());
-        assert_eq!(layout(&design.terms[0]), (0, true, 3, 6));
-        assert_eq!(layout(&design.terms[1]), (6, true, 1, 3));
-        assert_eq!(layout(&design.terms[2]), (9, false, 1, 2));
-        assert_eq!(design.n_dofs, 11);
-
-        // Each term's slopes are the effect's own, in effect order.
-        let slopes = |term: usize| design.terms[term].raw_slopes().collect::<Vec<_>>();
-        assert_eq!(slopes(0), [&z0[..], &z1[..]]);
-        assert!(slopes(1).is_empty());
-        assert_eq!(slopes(2), [&z1[..]]);
     }
 }

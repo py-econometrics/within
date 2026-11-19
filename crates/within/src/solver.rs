@@ -10,21 +10,17 @@ use schwarz_precond::{
     mlsmr, EscalationPolicy, IdentityOp, LsmrResult, LsmrStopReason, MlsmrOptions, Operator,
 };
 
-use crate::channel::CoefficientAddress;
 use crate::config::{LsmrOptions, PreconditionerConfig};
-use crate::domain::{Design, Effect, PreparedDesign};
-use crate::operator::schwarz::Preconditioner;
+use crate::design::{CoefficientAddress, CoefficientLayout};
+use crate::design::{Design, Effect};
+use crate::precond::Preconditioner;
+use crate::system::{DesignOperator, Fit, Gramian, OrthogonalDesign, Response};
 use crate::{BuildError, BuildWarning, SolveError, WithinError};
 
-mod ladder;
-mod layout;
-mod system;
 #[cfg(test)]
 mod tests;
 
-use ladder::PrecondSlot;
-pub use layout::CoefficientLayout;
-use system::{Fit, LeastSquaresSystem};
+use crate::precond::PrecondSlot;
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
 /// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a pass-through
@@ -129,7 +125,7 @@ pub struct SolveResult {
     /// Demeaned response: `y - D x` (length = n_obs), in caller order.
     ///
     /// Invariant: any per-observation field added here must be translated
-    /// back from internal order via `Design::permute_obs_out` before being
+    /// back from internal order via `Incidence::permute_obs_out` before being
     /// stored, or it leaks the locality-sorted row order to the caller.
     pub demeaned: Vec<f64>,
     /// Whether the iterative solver converged within `maxiter` iterations.
@@ -210,16 +206,17 @@ impl BatchSolveResult {
 /// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
 /// Python boundary — uses owned columns.
 pub struct Solver<'a> {
-    prepared: PreparedDesign<'a>,
+    /// `D̃ = D·R` for this solver's weights.
+    design: OrthogonalDesign<'a>,
     slot: PrecondSlot,
 }
 
 impl std::fmt::Debug for Solver<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Solver")
-            .field("n_obs", &self.prepared.design.n_obs)
-            .field("n_dofs", &self.prepared.design.n_dofs)
-            .field("has_weights", &self.prepared.sqrt_weights().is_some())
+            .field("n_obs", &self.design.n_obs())
+            .field("n_dofs", &self.design.n_dofs())
+            .field("has_weights", &self.design.is_weighted())
             .field("has_preconditioner", &self.preconditioner().is_some())
             .field("has_escalated", &self.has_escalated())
             .finish()
@@ -248,142 +245,143 @@ struct RhsSolution {
 }
 
 /// One RHS between rungs.
-enum Pass<'s, S: LeastSquaresSystem + 's> {
+enum Pass<'s> {
     /// No rung has run it yet; the first that does prepares it, inside its fan-out.
     Unstarted(&'s [f64]),
     /// Handed off with budget left; the next rung resumes from `probe.x`.
     Stalled {
-        rhs: S::Rhs<'s>,
+        rhs: Response<'s>,
         probe: LsmrResult,
         seconds: Seconds,
     },
     Done(RhsSolution),
 }
 
-/// Runs every pending RHS on one map; each finishes, and is released, here or stalls.
-fn rung<'s, S: LeastSquaresSystem>(
-    system: &'s S,
-    passes: Vec<Pass<'s, S>>,
-    map: Option<&Preconditioner>,
-    stall: Option<&dyn EscalationPolicy>,
-    lsmr: &LsmrOptions,
-) -> Result<Vec<Pass<'s, S>>, SolveError> {
-    // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
-    passes
-        .into_par_iter()
-        .map(|pass| {
-            let (rhs, probe, mut seconds) = match pass {
-                Pass::Done(solution) => return Ok(Pass::Done(solution)),
-                Pass::Unstarted(y) => {
-                    let started = Instant::now();
-                    let rhs = system.prepare(y)?;
-                    let prepare = started.elapsed().as_secs_f64();
-                    (rhs, None, Seconds { prepare, lsmr: 0.0 })
-                }
-                Pass::Stalled {
-                    rhs,
-                    probe,
-                    seconds,
-                } => (rhs, Some(probe), seconds),
-            };
-            // The whole ladder shares the caller's budget; a resumed rung gets what the last left.
-            let spent = probe.as_ref().map_or(0, |p| p.iterations);
-            let options = MlsmrOptions {
-                warm_start: probe.as_ref().map(|p| p.x.as_slice()),
-                escalation: stall,
-                local_size: lsmr.local_size,
-            };
-            let identity;
-            let m: &dyn Operator = match map {
-                Some(m) => m,
-                None => {
-                    identity = IdentityOp {
-                        n: system.matrix().ncols(),
-                    };
-                    &identity
-                }
-            };
-            let started = Instant::now();
-            let maxiter = lsmr.maxiter - spent;
-            let mut result = mlsmr(
-                system.matrix(),
-                system.b(&rhs),
-                m,
-                lsmr.tol,
-                maxiter,
-                options,
-            )?;
-            seconds.lsmr += started.elapsed().as_secs_f64();
-            // The next rung starts from `result.x`; the probe it replaces is released here.
-            drop(probe);
-            result.iterations += spent;
-            // A stall on the last permitted iteration leaves the next rung nothing to spend.
-            if result.stop_reason == LsmrStopReason::Escalated && result.iterations < lsmr.maxiter {
-                return Ok(Pass::Stalled {
-                    rhs,
-                    probe: result,
-                    seconds,
-                });
-            }
-            let LsmrResult {
-                x,
-                true_residual,
-                converged,
-                iterations,
-                normal_eq_residual,
-                ..
-            } = result;
-            Ok(Pass::Done(RhsSolution {
-                fit: system.finish(rhs, x, true_residual)?,
-                converged,
-                iterations,
-                // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
-                residual: normal_eq_residual,
-                seconds,
-            }))
-        })
-        .collect()
-}
-
-/// Every RHS in one pass; an unsettled ladder then builds Schwarz once and resumes the stalled.
-fn solve_all<S: LeastSquaresSystem>(
-    system: &S,
-    slot: &PrecondSlot,
-    ys: &[&[f64]],
-    lsmr: &LsmrOptions,
-) -> Result<(Vec<RhsSolution>, f64), WithinError> {
-    let (map, ladder) = match slot {
-        PrecondSlot::Static { map, .. } => (map.as_ref(), None),
-        // A settled ladder never re-probes: its map, or its kept build error, is final.
-        PrecondSlot::Adaptive(a) => match a.built.get() {
-            Some(Ok(_)) => (Some(a.rung()), None),
-            Some(Err(e)) => return Err(e.clone().into()),
-            None => (Some(&a.base), Some(a.as_ref())),
-        },
-    };
-    let stall = ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy);
-    let passes = ys.iter().map(|&y| Pass::Unstarted(y)).collect();
-    let mut passes = rung(system, passes, map, stall, lsmr)?;
-
-    let mut build_secs = 0.0;
-    if let Some(a) = ladder {
-        if passes.iter().any(|p| matches!(p, Pass::Stalled { .. })) {
-            // Built outside the fan-out, so sibling RHS never race for it.
-            build_secs = a.escalate(system)?;
-            passes = rung(system, passes, Some(a.rung()), None, lsmr)?;
-        }
-    }
-    let solutions = passes
-        .into_iter()
-        .map(|pass| match pass {
-            Pass::Done(solution) => solution,
-            _ => unreachable!("a rung without a stall policy finishes every RHS"),
-        })
-        .collect();
-    Ok((solutions, build_secs))
-}
-
 impl<'a> Solver<'a> {
+    /// Runs every pending RHS on one map; each finishes, and is released, here or stalls.
+    fn rung<'s>(
+        &'s self,
+        passes: Vec<Pass<'s>>,
+        map: Option<&Preconditioner>,
+        stall: Option<&dyn EscalationPolicy>,
+        lsmr: &LsmrOptions,
+    ) -> Result<Vec<Pass<'s>>, SolveError> {
+        // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
+        passes
+            .into_par_iter()
+            .map(|pass| {
+                let (rhs, probe, mut seconds) = match pass {
+                    Pass::Done(solution) => return Ok(Pass::Done(solution)),
+                    Pass::Unstarted(y) => {
+                        let started = Instant::now();
+                        let rhs = Response::new(&self.design, y)?;
+                        let prepare = started.elapsed().as_secs_f64();
+                        (rhs, None, Seconds { prepare, lsmr: 0.0 })
+                    }
+                    Pass::Stalled {
+                        rhs,
+                        probe,
+                        seconds,
+                    } => (rhs, Some(probe), seconds),
+                };
+                // The whole ladder shares the caller's budget; a resumed rung gets what the last left.
+                let spent = probe.as_ref().map_or(0, |p| p.iterations);
+                let options = MlsmrOptions {
+                    warm_start: probe.as_ref().map(|p| p.x.as_slice()),
+                    escalation: stall,
+                    local_size: lsmr.local_size,
+                };
+                let identity;
+                let m: &dyn Operator = match map {
+                    Some(m) => m,
+                    None => {
+                        identity = IdentityOp {
+                            n: self.design.n_dofs(),
+                        };
+                        &identity
+                    }
+                };
+                let started = Instant::now();
+                let maxiter = lsmr.maxiter - spent;
+                let mut result = mlsmr(
+                    &DesignOperator::new(&self.design),
+                    rhs.weighted(),
+                    m,
+                    lsmr.tol,
+                    maxiter,
+                    options,
+                )?;
+                seconds.lsmr += started.elapsed().as_secs_f64();
+                // The next rung starts from `result.x`; the probe it replaces is released here.
+                drop(probe);
+                result.iterations += spent;
+                // A stall on the last permitted iteration leaves the next rung nothing to spend.
+                if result.stop_reason == LsmrStopReason::Escalated
+                    && result.iterations < lsmr.maxiter
+                {
+                    return Ok(Pass::Stalled {
+                        rhs,
+                        probe: result,
+                        seconds,
+                    });
+                }
+                let LsmrResult {
+                    x,
+                    true_residual,
+                    converged,
+                    iterations,
+                    normal_eq_residual,
+                    ..
+                } = result;
+                Ok(Pass::Done(RhsSolution {
+                    fit: Fit::new(&self.design, rhs, x, true_residual),
+                    converged,
+                    iterations,
+                    // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
+                    residual: normal_eq_residual,
+                    seconds,
+                }))
+            })
+            .collect()
+    }
+
+    /// Every RHS in one pass; an unsettled ladder then builds Schwarz once and resumes the stalled.
+    fn solve_all(
+        &self,
+        ys: &[&[f64]],
+        lsmr: &LsmrOptions,
+    ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
+        let (map, ladder) = match &self.slot {
+            PrecondSlot::Static { map, .. } => (map.as_ref(), None),
+            // A settled ladder never re-probes: its map, or its kept build error, is final.
+            PrecondSlot::Adaptive(a) => match a.built.get() {
+                Some(Ok(_)) => (Some(a.rung()), None),
+                Some(Err(e)) => return Err(e.clone().into()),
+                None => (Some(&a.base), Some(a.as_ref())),
+            },
+        };
+        let stall = ladder.map(|a| &a.ladder().stall as &dyn EscalationPolicy);
+        let passes = ys.iter().map(|&y| Pass::Unstarted(y)).collect();
+        let mut passes = self.rung(passes, map, stall, lsmr)?;
+
+        let mut build_secs = 0.0;
+        if let Some(a) = ladder {
+            if passes.iter().any(|p| matches!(p, Pass::Stalled { .. })) {
+                // Built outside the fan-out, so sibling RHS never race for it.
+                build_secs = a.escalate(Gramian::new(&self.design))?;
+                passes = self.rung(passes, Some(a.rung()), None, lsmr)?;
+            }
+        }
+        let solutions = passes
+            .into_iter()
+            .map(|pass| match pass {
+                Pass::Done(solution) => solution,
+                _ => unreachable!("a rung without a stall policy finishes every RHS"),
+            })
+            .collect();
+        Ok((solutions, build_secs))
+    }
+
     /// Construct a solver.
     ///
     /// `design` accepts raw categories (`ArrayView2<u32>`), a pre-built
@@ -406,15 +404,16 @@ impl<'a> Solver<'a> {
         weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        // Whiten the slope columns (if any) before the preconditioner reads them.
-        let prepared = PreparedDesign::new(design.into_design()?, weights)?;
-        let n_dofs = prepared.design.n_dofs;
+        // Orthogonalize the slope columns (if any) before the preconditioner reads them.
+        let design = design.into_design()?.orthogonalize(weights)?;
+        let gramian = Gramian::new(&design);
+        let n_dofs = design.n_dofs();
 
         let slot = match preconditioner.into() {
             PreconditionerInput::Default => {
-                PrecondSlot::build(&prepared, PreconditionerConfig::default())?
+                PrecondSlot::build(gramian, PreconditionerConfig::default())?
             }
-            PreconditionerInput::Config(c) => PrecondSlot::build(&prepared, c)?,
+            PreconditionerInput::Config(c) => PrecondSlot::build(gramian, c)?,
             PreconditionerInput::Prebuilt(p) => {
                 if p.nrows() != n_dofs || p.ncols() != n_dofs {
                     return Err(BuildError::PreconditionerDimensionMismatch {
@@ -423,11 +422,11 @@ impl<'a> Solver<'a> {
                         actual_cols: p.ncols(),
                     });
                 }
-                PrecondSlot::reuse(&prepared, p)?
+                PrecondSlot::reuse(gramian, p)?
             }
         };
 
-        Ok(Self { prepared, slot })
+        Ok(Self { design, slot })
     }
 
     /// Non-fatal events from the preconditioner build; a reused pre-built preconditioner
@@ -451,9 +450,9 @@ impl<'a> Solver<'a> {
     /// Per-level directions the data cannot identify, shared across all RHS:
     /// identification depends only on the design and weights, never on `y`.
     fn unidentified(&self) -> Vec<CoefficientAddress> {
-        self.prepared
+        self.design
             .unidentified()
-            .map(|position| position.to_caller_address(&self.prepared.design))
+            .map(|position| self.design.layout().caller_address(position))
             .collect()
     }
 
@@ -467,7 +466,7 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let (solutions, build_secs) = solve_all(&self.prepared, &self.slot, &[y], lsmr)?;
+        let (solutions, build_secs) = self.solve_all(&[y], lsmr)?;
         let solution = solutions
             .into_iter()
             .next()
@@ -478,7 +477,7 @@ impl<'a> Solver<'a> {
             unidentified: self.unidentified(),
             // Read after solving so a deferred Adaptive build's warnings are included.
             warnings: self.warnings().to_vec(),
-            layout: CoefficientLayout::from_design(&self.prepared.design),
+            layout: self.design.layout().clone(),
             demeaned: solution.fit.demeaned,
             converged: solution.converged,
             iterations: solution.iterations,
@@ -501,10 +500,10 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
-        let (solutions, build_secs) = solve_all(&self.prepared, &self.slot, ys, lsmr)?;
+        let (solutions, build_secs) = self.solve_all(ys, lsmr)?;
 
-        let mut x = Vec::with_capacity(self.prepared.design.n_dofs * n_rhs);
-        let mut demeaned = Vec::with_capacity(self.prepared.design.n_obs * n_rhs);
+        let mut x = Vec::with_capacity(self.design.n_dofs() * n_rhs);
+        let mut demeaned = Vec::with_capacity(self.design.n_obs() * n_rhs);
         let mut converged = Vec::with_capacity(n_rhs);
         let mut iterations = Vec::with_capacity(n_rhs);
         let mut residual = Vec::with_capacity(n_rhs);
@@ -524,7 +523,7 @@ impl<'a> Solver<'a> {
             unidentified: self.unidentified(),
             // Read after solving so a deferred Adaptive build's warnings are included.
             warnings: self.warnings().to_vec(),
-            layout: CoefficientLayout::from_design(&self.prepared.design),
+            layout: self.design.layout().clone(),
             demeaned,
             converged,
             iterations,
@@ -533,8 +532,8 @@ impl<'a> Solver<'a> {
             // The deferred build is the batch's only setup, so this is zero when it built nothing.
             time_setup: build_secs,
             time_total: t_start.elapsed().as_secs_f64(),
-            n_dofs: self.prepared.design.n_dofs,
-            n_obs: self.prepared.design.n_obs,
+            n_dofs: self.design.n_dofs(),
+            n_obs: self.design.n_obs(),
         })
     }
 
@@ -549,12 +548,12 @@ impl<'a> Solver<'a> {
 
     /// Number of DOFs (coefficients).
     pub fn n_dofs(&self) -> usize {
-        self.prepared.design.n_dofs
+        self.design.n_dofs()
     }
 
     /// Number of observations.
     pub fn n_obs(&self) -> usize {
-        self.prepared.design.n_obs
+        self.design.n_obs()
     }
 }
 

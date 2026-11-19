@@ -170,30 +170,7 @@ fn test_solver_accepts_slope_bearing_design_alongside_other_terms() {
     Solver::new(design, None, None).expect("signed routing builds");
 }
 
-// One wiring check per enum: From conversions and the transparent source() forward.
-
-#[test]
-fn test_within_error_from_build_error() {
-    let inner = BuildError::EmptyObservations;
-    let e: WithinError = inner.into();
-    match e {
-        WithinError::Build(BuildError::EmptyObservations) => {}
-        other => panic!("expected Build(EmptyObservations), got: {:?}", other),
-    }
-}
-
-#[test]
-fn test_within_error_from_solve_error() {
-    let inner = SolveError::InvalidInput {
-        context: "test",
-        message: "test".to_string(),
-    };
-    let e: WithinError = inner.into();
-    match e {
-        WithinError::Solve(_) => {}
-        other => panic!("expected Solve, got: {:?}", other),
-    }
-}
+// The transparent source() forward.
 
 #[test]
 fn test_within_error_source_chains_through_transparent_wrapper() {

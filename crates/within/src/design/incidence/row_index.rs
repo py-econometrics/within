@@ -10,7 +10,7 @@ pub(crate) enum RowIndex {
 impl RowIndex {
     /// Rows grouped by key, ascending within each, and where each key's rows start.
     pub(crate) fn argsort(key: &[u32], n_keys: usize) -> (Vec<usize>, Self) {
-        let offsets = super::offsets(n_keys, key.iter().map(|&k| k as usize));
+        let offsets = offsets(n_keys, key.iter().map(|&k| k as usize));
         let rows = if u32::try_from(key.len().saturating_sub(1)).is_ok() {
             Self::Narrow(stable_argsort(key, &offsets, |i| i as u32))
         } else {
@@ -73,10 +73,21 @@ fn scatter<I: Copy>(v: &[f64], rows: &[I], row: impl Fn(I) -> usize) -> Vec<f64>
     out
 }
 
+/// Group `k` of the counted `keys` owns `offsets[k]..offsets[k + 1]`.
+fn offsets(n_keys: usize, keys: impl IntoIterator<Item = usize>) -> Vec<usize> {
+    let mut offsets = vec![0usize; n_keys + 1];
+    for k in keys {
+        offsets[k + 1] += 1;
+    }
+    for i in 1..offsets.len() {
+        offsets[i] += offsets[i - 1];
+    }
+    offsets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::offsets;
 
     fn rows(index: &RowIndex, n: usize) -> Vec<usize> {
         let mut rows = Vec::new();

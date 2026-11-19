@@ -3,26 +3,31 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::{build_local_domains, LocalDomain};
 use crate::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, SchurMode,
     DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
-use crate::domain::{build_local_domains, Design, LocalDomain, PreparedDesign};
-use crate::operator::schwarz::build_additive;
+use crate::design::Design;
+use crate::precond::build_additive;
+use crate::system::Gramian;
+use crate::system::OrthogonalDesign;
 use schwarz_precond::{LocalSolver, MemBuffer, MemStack, Operator, Threads};
 
 const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
-fn make_test_data() -> (PreparedDesign<'static>, Vec<LocalDomain>) {
-    let design =
-        PreparedDesign::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]]);
+fn make_test_data() -> (OrthogonalDesign<'static>, Vec<LocalDomain>) {
+    let design = Design::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]])
+        .orthogonalize(None)
+        .unwrap();
     let (domain_pairs, _) =
-        build_local_domains(&design, &LocalSolverConfig::default()).expect("plain domains build");
+        build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
+            .expect("plain domains build");
     (design, domain_pairs)
 }
 
 /// One plain pair: `n_keep · elim_ratio` levels, each in three weighted cells of `n_keep`.
-fn synthetic_star_design(n_keep: usize, elim_ratio: usize) -> PreparedDesign<'static> {
+fn synthetic_star_design(n_keep: usize, elim_ratio: usize) -> OrthogonalDesign<'static> {
     let (mut rows, mut cols, mut weights) = (Vec::new(), Vec::new(), Vec::new());
     for i in 0..n_keep * elim_ratio {
         for (col, w) in [
@@ -36,7 +41,7 @@ fn synthetic_star_design(n_keep: usize, elim_ratio: usize) -> PreparedDesign<'st
         }
     }
     let design = Design::from_levels_for_test(vec![rows, cols]);
-    PreparedDesign::new(design, Some(&weights)).expect("valid weights")
+    design.orthogonalize(Some(&weights)).unwrap()
 }
 
 fn run_block_elim_nested_rayon_case() {
@@ -51,8 +56,9 @@ fn run_block_elim_nested_rayon_case() {
         ..Default::default()
     };
     let design = synthetic_star_design(n_keep, elim_ratio);
-    let n_dofs = design.design.n_dofs;
-    let (mut domain_pairs, _) = build_local_domains(&design, &config).expect("domains");
+    let n_dofs = design.n_dofs();
+    let (mut domain_pairs, _) =
+        build_local_domains(Gramian::new(&design), &config).expect("domains");
     let [domain] = &domain_pairs[..] else {
         panic!("one component expected, got {}", domain_pairs.len())
     };
@@ -129,14 +135,10 @@ fn test_block_elim_nested_rayon_does_not_deadlock() {
 #[test]
 fn test_build_additive() {
     let (design, domain_pairs) = make_test_data();
-    let schwarz = build_additive(
-        domain_pairs,
-        &LocalSolverConfig::default(),
-        design.design.n_dofs,
-    )
-    .expect("build schwarz with explicit domains");
-    let r = vec![1.0; design.design.n_dofs];
-    let mut z = vec![0.0; design.design.n_dofs];
+    let schwarz = build_additive(domain_pairs, &LocalSolverConfig::default(), design.n_dofs())
+        .expect("build schwarz with explicit domains");
+    let r = vec![1.0; design.n_dofs()];
+    let mut z = vec![0.0; design.n_dofs()];
     schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
 }
 
@@ -149,7 +151,8 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
         dense_threshold,
         ..Default::default()
     };
-    let (domains, _) = build_local_domains(&synthetic_star_design(8, 4), &config).expect("domains");
+    let design = synthetic_star_design(8, 4);
+    let (domains, _) = build_local_domains(Gramian::new(&design), &config).expect("domains");
     let [domain] = &domains[..] else {
         panic!("one component expected, got {}", domains.len())
     };
@@ -185,7 +188,7 @@ fn test_dense_threshold_zero_disables_exact_route() {
 
 #[test]
 fn signed_wire_fixture_contains_uniform_weights() {
-    use crate::operator::schwarz::{Preconditioner, Variant};
+    use crate::precond::{Preconditioner, Variant};
     use schwarz_precond::PartitionWeights;
 
     let bytes = include_bytes!(concat!(

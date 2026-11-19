@@ -1,16 +1,15 @@
-use std::sync::Arc;
-
 use rstest::rstest;
 
-use super::{CoefficientAddress, CoefficientLayout};
-use crate::channel::Channel;
+use super::CoefficientAddress;
 use crate::config::{LocalSolverConfig, LsmrOptions};
-use crate::domain::Design;
+use crate::design::Channel;
+use crate::design::Design;
+use crate::system::OrthogonalDesign;
 use crate::{Effect, PreconditionerConfig, Solver};
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
 /// in `tests/slopes_routing.rs`. A positive slope-only term is not centered by
-/// whitening, so the signed pair stays all-positive — balanced — while generic
+/// orthogonalization, so the signed pair stays all-positive — balanced — while generic
 /// `z` keeps it strictly inside the PSD cone: genuine surplus, grounded.
 fn at(term: usize, level: u32, column: usize) -> CoefficientAddress {
     CoefficientAddress {
@@ -57,7 +56,7 @@ fn coefficient_layout_translates_addresses_both_ways() {
         Effect::new(&g, true, [&z[..]]).expect("slope effect"),
     ])
     .expect("design");
-    let layout = CoefficientLayout::from_design(&design);
+    let layout = design.orthogonalize(None).unwrap().layout().clone();
 
     assert_eq!(layout.n_terms(), 2);
     assert_eq!(
@@ -100,14 +99,12 @@ fn solvers_built_from_a_borrowed_design_share_its_storage() {
     let w: Vec<f64> = (0..n).map(|i| 1.0 + (i % 5) as f64).collect();
     let y: Vec<f64> = (0..n).map(|i| (i % 7) as f64).collect();
 
+    // `orthogonalize` moves the `E` it is given, so sharing rests on `&Design`'s conversion alone.
+    let shared = super::IntoDesign::into_design(&design).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&shared.incidence, &design.incidence));
+
     let unweighted = Solver::new(&design, None, &PreconditionerConfig::Diagonal).unwrap();
     let weighted = Solver::new(&design, Some(&w), &PreconditionerConfig::Diagonal).unwrap();
-
-    assert!(Arc::ptr_eq(
-        &unweighted.prepared.design.terms,
-        &design.terms
-    ));
-    assert!(Arc::ptr_eq(&weighted.prepared.design.terms, &design.terms));
     let a = unweighted.solve(&y, None).unwrap();
     let b = weighted.solve(&y, None).unwrap();
     assert!(a.converged && b.converged);
@@ -240,16 +237,15 @@ fn akm_panel(
 
 /// Largest absolute within-level mean of `demeaned`, over the levels of every term whose
 /// normal equations force one: only an intercept makes the within-level sum a residual leg.
-fn max_abs_group_mean(design: &Design<'_>, demeaned: &[f64]) -> f64 {
-    let demeaned = design.permute_obs_in(demeaned);
+fn max_abs_group_mean(design: &OrthogonalDesign<'_>, demeaned: &[f64]) -> f64 {
+    let demeaned = design.incidence().permute_obs_in(demeaned);
     design
-        .terms
-        .iter()
-        .filter(|t| t.intercept)
+        .terms()
+        .filter(|t| t.layout().intercept())
         .map(|t| {
-            let levels = t.levels();
-            let mut sums = vec![0.0f64; t.n_levels()];
-            let mut counts = vec![0.0f64; t.n_levels()];
+            let (layout, levels) = (t.layout(), t.levels());
+            let mut sums = vec![0.0f64; layout.n_levels()];
+            let mut counts = vec![0.0f64; layout.n_levels()];
             for (obs, &level) in levels.iter().enumerate() {
                 sums[level as usize] += demeaned[obs];
                 counts[level as usize] += 1.0;
@@ -300,7 +296,7 @@ fn an_aliased_slope_converges(#[case] spec: SlopeSpec) {
     let solver = Solver::new(panel.effects(), None, additive()).expect("solver");
     let out = solve_tight(&solver, &panel.y);
     // A floating component grounded by mistake reports a false convergence at an O(1) mean.
-    let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
+    let group_mean = max_abs_group_mean(&solver.design, &out.demeaned);
     assert!(
         out.converged && group_mean < 1e-9,
         "converged={}, gm={group_mean:.3e}",
@@ -340,8 +336,8 @@ impl SharedCovariatePair {
 /// same error without the ladder rebuilding, and re-failing, the same map.
 #[test]
 fn a_failed_deferred_build_is_kept_and_reported_again() {
-    use super::ladder::PrecondSlot;
     use crate::config::{ScalingConfig, ScalingFailure};
+    use crate::precond::PrecondSlot;
     use crate::{BuildError, WithinError};
 
     // A zero-tolerance, zero-iteration certificate rejects the signed cross-block deterministically.
@@ -457,7 +453,7 @@ fn an_alias_through_a_zero_loading_still_converges() {
     };
     let solver = Solver::new(effects, None, schwarz).expect("solver");
     let out = solve_tight(&solver, &y);
-    let group_mean = max_abs_group_mean(&solver.prepared.design, &out.demeaned);
+    let group_mean = max_abs_group_mean(&solver.design, &out.demeaned);
     assert!(
         out.converged && group_mean < 1e-9,
         "converged={}, iterations={}, gm={group_mean:.3e}",

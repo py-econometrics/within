@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::channel::ChannelPair;
+use crate::design::ChannelPair;
 
 pub use schwarz_precond::SolveError;
 

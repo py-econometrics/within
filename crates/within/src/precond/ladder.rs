@@ -6,14 +6,14 @@ use std::time::Instant;
 use once_cell::sync::OnceCell;
 
 use crate::config::PreconditionerConfig;
-use crate::domain::PreparedDesign;
-use crate::operator::schwarz::{build_adaptive, build_diagonal, AdaptiveLadder, Preconditioner};
+use crate::precond::{
+    build_adaptive, build_diagonal, build_schwarz, AdaptiveLadder, Preconditioner,
+};
+use crate::system::Gramian;
 use crate::{BuildError, BuildWarning};
 
-use super::system::LeastSquaresSystem;
-
 /// The solver's preconditioner: a fixed map, or an adaptive diagonal→Schwarz ladder.
-pub(super) enum PrecondSlot {
+pub(crate) enum PrecondSlot {
     /// A single map (`None` = unpreconditioned) built at construction, with its build's warnings.
     Static {
         map: Option<Preconditioner>,
@@ -25,8 +25,8 @@ pub(super) enum PrecondSlot {
 
 impl PrecondSlot {
     /// Resolve a strategy: a fixed map built now, or a diagonal base with Schwarz deferred to a stall.
-    pub(super) fn build(
-        prepared: &PreparedDesign<'_>,
+    pub(crate) fn build(
+        gramian: Gramian<'_>,
         config: PreconditionerConfig,
     ) -> Result<Self, BuildError> {
         Ok(match config {
@@ -35,11 +35,11 @@ impl PrecondSlot {
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Diagonal => Self::Static {
-                map: Some(build_diagonal(prepared)?),
+                map: Some(build_diagonal(gramian)?),
                 warnings: Vec::new(),
             },
             PreconditionerConfig::Additive { local_solver } => {
-                let (map, warnings) = prepared.build_schwarz(&local_solver)?;
+                let (map, warnings) = build_schwarz(gramian, &local_solver)?;
                 Self::Static { map, warnings }
             }
             PreconditionerConfig::Adaptive {
@@ -48,15 +48,15 @@ impl PrecondSlot {
             } => {
                 // Fail before the diagonal pass; `reuse` repeats this for a deserialized ladder.
                 local_solver.validate()?;
-                let base = build_adaptive(prepared, stall, local_solver)?;
-                Self::reuse(prepared, base)?
+                let base = build_adaptive(gramian, stall, local_solver)?;
+                Self::reuse(gramian, base)?
             }
         })
     }
 
     /// An unescalated ladder resumes, or settles on one term; any other map stays fixed.
-    pub(super) fn reuse(
-        prepared: &PreparedDesign<'_>,
+    pub(crate) fn reuse(
+        gramian: Gramian<'_>,
         preconditioner: Preconditioner,
     ) -> Result<Self, BuildError> {
         let Some(ladder) = preconditioner.ladder() else {
@@ -67,7 +67,7 @@ impl PrecondSlot {
         };
         // A deserialized ladder skipped `Adaptive`'s build-time check, and a one-term design settles.
         ladder.escalated.validate()?;
-        Ok(if prepared.design.n_factors() < 2 {
+        Ok(if gramian.layout().n_terms() < 2 {
             Self::Static {
                 map: Some(preconditioner.settle()),
                 warnings: Vec::new(),
@@ -82,45 +82,45 @@ impl PrecondSlot {
 }
 
 /// Diagonal-first strategy holding everything needed to build the Schwarz rung on demand.
-pub(super) struct AdaptivePrecond {
+pub(crate) struct AdaptivePrecond {
     /// Applies the diagonal and carries the ladder, so handing it out keeps the strategy.
-    pub(super) base: Preconditioner,
+    pub(crate) base: Preconditioner,
     /// A design's own build failure settles here too; a failed isolation pool retries instead.
-    pub(super) built: OnceCell<Result<AdaptiveBuild, BuildError>>,
+    pub(crate) built: OnceCell<Result<AdaptiveBuild, BuildError>>,
 }
 
 /// Outcome of the deferred build: the Schwarz map, or `None` when no factor-pair target exists.
-pub(super) struct AdaptiveBuild {
-    pub(super) schwarz: Option<Preconditioner>,
-    pub(super) warnings: Vec<BuildWarning>,
+pub(crate) struct AdaptiveBuild {
+    pub(crate) schwarz: Option<Preconditioner>,
+    pub(crate) warnings: Vec<BuildWarning>,
 }
 
 impl AdaptivePrecond {
-    pub(super) fn ladder(&self) -> &AdaptiveLadder {
+    pub(crate) fn ladder(&self) -> &AdaptiveLadder {
         self.base
             .ladder()
             .expect("an adaptive slot is built only from a ladder")
     }
 
-    pub(super) fn build(&self) -> Option<&AdaptiveBuild> {
+    pub(crate) fn build(&self) -> Option<&AdaptiveBuild> {
         self.built.get().and_then(|b| b.as_ref().ok())
     }
 
-    pub(super) fn schwarz(&self) -> Option<&Preconditioner> {
+    pub(crate) fn schwarz(&self) -> Option<&Preconditioner> {
         self.build().and_then(|b| b.schwarz.as_ref())
     }
 
     /// The rung a solve should run on: the escalated Schwarz map once built, else the diagonal.
-    pub(super) fn rung(&self) -> &Preconditioner {
+    pub(crate) fn rung(&self) -> &Preconditioner {
         self.schwarz().unwrap_or(&self.base)
     }
 
     /// Build once and return this call's build seconds; every other caller waits for it.
-    pub(super) fn escalate(&self, system: &impl LeastSquaresSystem) -> Result<f64, BuildError> {
+    pub(crate) fn escalate(&self, gramian: Gramian<'_>) -> Result<f64, BuildError> {
         let mut build_secs = 0.0;
         let built = self.built.get_or_try_init(|| {
             let t_build = Instant::now();
-            let outcome = isolated(|| system.build_schwarz(&self.ladder().escalated))?
+            let outcome = isolated(|| build_schwarz(gramian, &self.ladder().escalated))?
                 .map(|(schwarz, warnings)| AdaptiveBuild { schwarz, warnings });
             build_secs = t_build.elapsed().as_secs_f64();
             Ok(outcome)
