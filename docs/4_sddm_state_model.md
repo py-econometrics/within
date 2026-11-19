@@ -35,11 +35,11 @@ $\ell$ of each slope-bearing term (pivoted Gram–Schmidt, slopes centered on
 the intercept),
 
 $$
-M_\ell := \sum_{o \in \ell} w\, c\,c^\top = R_\ell^\top \Delta_\ell R_\ell ,\qquad
-D \mapsto D^\circ = D\,R^{-1} \ \text{blockwise}.
+M_\ell := \sum_{o \in \ell} w\, c\,c^\top ,\qquad R_\ell^\top M_\ell R_\ell = \Delta_\ell ,\qquad
+D \mapsto D^\circ = D\,R \ \text{blockwise}.
 $$
 
-Pullback $\gamma = R^{-1}\hat\gamma$, applied once at return; $\tilde v$
+Pullback $\gamma = R\hat\gamma$, applied once at return; $\tilde v$
 invariant. $M_\ell u = 0$ ⇒ $u$ is a zero row of the whole Gramian ⇒ exits
 here as an exact-zero column; the min-norm iteration returns exact-$0$
 coefficients. Only cross-channel *orthogonality* is load-bearing (it makes
@@ -99,7 +99,7 @@ it).
 
 | edge | domain → codomain | action | tag | pullback |
 |---|---|---|---|---|
-| orthogonalize | problem → orthogonalized problem | per-level congruence $R^{-1}$ | exact | $\gamma = R^{-1}\hat\gamma$ at return |
+| orthogonalize | problem → orthogonalized problem | per-level congruence $R$ | exact | $\gamma = R\hat\gamma$ at return |
 | restrict | G∘ → P | principal submatrix, one factor pair | exact¹ | — |
 | split | P → {B} | one member per channel pair, per component; exact partition of coupling; members overlap on shared channels | exact | via recompose |
 | validate | plain B → L₊ | check row sums ≡ diagonals (roundoff); adopt $\sigma = (\mathbf{1}_q, -\mathbf{1}_r)$ | exact | $x = \sigma \circ \hat x$ |
@@ -135,7 +135,7 @@ Boundaries (first-class, not omissions):
 flowchart TD
     RAW["min ‖W½(v − Dγ)‖  per FWL target v"]
     WHITE["orthogonalized problem"]
-    RAW -->|"orthogonalize — γ = R⁻¹γ̂"| WHITE
+    RAW -->|"orthogonalize — γ = Rγ̂"| WHITE
 
     OP["A = W½D∘"]
     GW["G∘ = AᵀA"]
