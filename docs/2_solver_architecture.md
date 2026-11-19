@@ -27,7 +27,7 @@ The solver combines three algorithmic ideas in a layered architecture:
 
 As discussed in [Part 1, Section 5.2](1_fixed_effects_and_block_methods.md#52-the-key-idea-factor-pair-subdomains), the central trade-off for solving the fixed effects problem is between **exact solves on single factors** (demeaning via the MAP algorithm) vs. **approximate solves on factor pairs** (`within`). The three layers exist to make this trade-off pay off:
 
-- **Block-bipartite structure**: each factor pair $(q,r)$ induces a bipartite subgraph. Connected components of these subgraphs form natural subdomains with limited overlap.
+- **Block-bipartite structure**: each factor pair $(q,r)$ induces a bipartite subgraph. Each pair is one subdomain, whose local solve treats the subgraph's connected components independently.
 
 - **Laplacian connection**: after a sign-flip transformation (Section 2.3), each bipartite block becomes a graph Laplacian. This unlocks nearly-linear-time *approximate* solvers — exact factorization would be too expensive for large subdomains, but the approximate Cholesky factorization ([Part 3](3_local_solvers.md)) produces factors that are accurate enough to make the outer LSMR iteration converge in very few steps.
 
@@ -49,7 +49,7 @@ $$
 G_{qr} = \begin{pmatrix} D_q & C_{qr} \\ C_{qr}^\top & D_r \end{pmatrix}
 $$
 
-### 2.2 Connected components as subdomains
+### 2.2 Connected components within a subdomain
 
 The bipartite graph of $C_{qr}$ may have multiple connected components. Each connected component defines an independent subproblem. approx-chol factors the components as the diagonal blocks of one approximate inverse, so each factor pair is one subdomain of the Schwarz preconditioner whose local solve treats its components independently; an isolated level (no nonzero cross entry) is a one-level component.
 
@@ -122,7 +122,7 @@ When subdomains overlap (a DOF / factor level belongs to multiple subdomains), c
 
 ![Partition of unity](images/partition_of_unity.svg)
 
-Each DOF / factor level $j$ that appears in $c_j$ subdomains gets weight $\omega_j = 1/\sqrt{c_j}$ in each subdomain. The weights are applied on both the restriction and prolongation sides, so they contribute $c_j \times \omega_j^2 = 1$ — correctly partitioning the correction. In the running example, every DOF / factor level appears in exactly 2 subdomains, so every weight is $\omega_j = 1/\sqrt{2}$.
+Each DOF / factor level $j$ that appears in $c_j$ subdomains gets weight $\omega_j = 1/\sqrt{c_j}$ in each subdomain. This holds for intercept-only designs; a design with any slope channel gives every DOF weight $1$, because slope channels break the assumption that all subdomains are equally informative. The weights are applied on both the restriction and prolongation sides, so they contribute $c_j \times \omega_j^2 = 1$ — correctly partitioning the correction. In the running example, every DOF / factor level appears in exactly 2 subdomains, so every weight is $\omega_j = 1/\sqrt{2}$.
 
 ### 4.3 The additive Schwarz operator
 
@@ -144,7 +144,7 @@ Subdomains are derived from the factor-pair structure of the Gramian:
 2. **Build cross-tabulation**: for each pair, scan observations to build the sparse bipartite block $C_{qr}$ and diagonal vectors $D_q$, $D_r$.
 3. **Factor the pair**: approx-chol finds the connected components of the bipartite graph of $C_{qr}$ and factors each as one diagonal block of the pair's approximate inverse.
 4. **Create subdomains**: each factor pair becomes one subdomain over the global DOF / factor level indices of both factors; levels with a zero diagonal solve to zero.
-5. **Compute partition-of-unity weights**: if subdomains overlap, count how many subdomains each DOF / factor level belongs to and assign $\omega_j = 1/\sqrt{c_j}$; for non-overlapping DOFs / factor levels the weight is trivially 1.
+5. **Compute partition-of-unity weights** (intercept-only designs; with a slope channel every weight is 1): if subdomains overlap, count how many subdomains each DOF / factor level belongs to and assign $\omega_j = 1/\sqrt{c_j}$; for non-overlapping DOFs / factor levels the weight is trivially 1.
 
 Factor pairs are processed in parallel.
 
@@ -161,13 +161,13 @@ We conclude with a summary of the full algorithm.
 
 2. **For each factor pair $(q, r)$ in parallel:**
    - Build cross-tabulation $C_{qr}$ and diagonal blocks $D_q$, $D_r$.
-   - Find connected components of the bipartite graph of $C_{qr}$.
-   - Create one subdomain per component, recording its global DOF / factor level indices.
+   - Create one subdomain for the pair, recording the global DOF / factor level indices of both factors.
 
-3. **Compute partition-of-unity weights**: $\omega_j = 1/\sqrt{c_j}$ for each DOF / factor level $j$.
+3. **Compute partition-of-unity weights**: $\omega_j = 1/\sqrt{c_j}$ for each DOF / factor level $j$ (intercept-only designs; with a slope channel every weight is 1).
 
 4. **For each subdomain in parallel:**
-   - Build local Laplacian via sign-flip (Section 2.3).
+   - Find the connected components of the bipartite graph of $C_{qr}$; each is one diagonal block of the local solve.
+   - Build each component's Laplacian via sign-flip (Section 2.3).
    - Factor with approximate Cholesky (or dense Cholesky for small systems; see Part 3).
 
 5. **Assemble** Schwarz preconditioner $M^{-1}$ from subdomain factors.

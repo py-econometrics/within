@@ -242,7 +242,7 @@ The figure below illustrates the difference between what MAP algorithm and `with
 |---|---|---|
 | Local solve | **Exact** (diagonal inversion) | **Approximate** (sampled Cholesky) |
 | Coupling captured | None - ignores $C_{qr}$ entirely | Full pairwise interaction |
-| Number of subdomains | $Q$ | $\leq \binom{Q}{2} \times$ (components) |
+| Number of subdomains | $Q$ | $\leq \binom{Q}{2}$ |
 | Overlap | None | Yes - each factor level appears in $Q - 1$ pairs |
 
 Demeaning solves each factor *exactly* but learns nothing about cross-factor structure. Factor-pair subdomains solve each pair *approximately* but capture the coupling that makes convergence slow in the first place. As a result, the approximate pair-solves carry much more information per iteration, and fewer outer iterations are needed until convergence.
