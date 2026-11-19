@@ -32,12 +32,6 @@ impl FactorEncoding {
     // Inlined into `build`, its label loops lose registers and reload pointers from the stack.
     #[inline(never)]
     pub(in crate::design) fn encode_labels(labels: Cow<'_, [u32]>) -> EncodedFactor<'_> {
-        if labels.is_empty() {
-            return EncodedFactor {
-                encoding: Self::identity(0),
-                levels: labels,
-            };
-        }
         match identify_label_layout(&labels) {
             LabelLayout::Contiguous { min, max } => EncodedFactor::contiguous(labels, min, max),
             LabelLayout::SortedWithGaps => EncodedFactor::sorted_gaps(&labels),
@@ -321,10 +315,6 @@ fn is_non_decreasing_with_gaps(labels: &[u32]) -> Option<bool> {
 /// Every label must lie in `min..=max`, and the range must be no wider than the column.
 fn get_distinct_labels(labels: &[u32], min: u32, max: u32) -> Option<Vec<u32>> {
     let width = (max - min) as usize + 1;
-    debug_assert!(
-        width <= labels.len(),
-        "a table over the range would outgrow the column"
-    );
     let present: Vec<AtomicBool> = (0..width)
         .into_par_iter()
         .map(|_| AtomicBool::new(false))

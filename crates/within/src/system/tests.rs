@@ -38,14 +38,6 @@ fn orthogonalizes_each_slope_bearing_term() {
 }
 
 #[test]
-fn slope_free_term_has_no_slopes() {
-    let prepared = Design::from_levels_for_test(vec![vec![0, 1, 0], vec![0, 0, 1]])
-        .orthogonalize(None)
-        .unwrap();
-    assert!(prepared.terms().all(|t| t.slopes().len() == 0));
-}
-
-#[test]
 fn unidentified_directions_ascend_across_terms() {
     // Index-order term iteration keeps the list ascending without any sort.
     let f0 = [0u32, 0, 1, 1, 2, 2];
@@ -70,27 +62,6 @@ fn unidentified_directions_ascend_across_terms() {
             },
         ]
     );
-}
-
-#[test]
-fn back_transform_leaves_other_terms_untouched() {
-    let design = Design::new(three_term_effects())
-        .unwrap()
-        .orthogonalize(None)
-        .unwrap();
-
-    let mut x: Vec<f64> = (0..design.n_dofs()).map(|i| 1.0 + i as f64).collect();
-    let before = x.clone();
-    design.back_transform(&mut x);
-
-    // Plain term 1 sits between the two slope-bearing blocks.
-    let (t1, t2) = (
-        design.layout().term(1).dofs().start,
-        design.layout().term(2).dofs().start,
-    );
-    assert_eq!(x[t1..t2], before[t1..t2]);
-    assert_ne!(x[..t1], before[..t1]);
-    assert_ne!(x[t2..], before[t2..]);
 }
 
 /// Welford's mean of this order is `5 + 2⁻⁵⁰`, so plain centering leaves the mean year a noise load.

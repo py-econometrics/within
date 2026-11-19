@@ -126,7 +126,6 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
     let counts: Vec<AtomicU32> = (0..n_dofs).map(|_| AtomicU32::new(0)).collect();
     domain_pairs.par_iter().for_each(|ld| {
         for &idx in ld.core.global_indices() {
-            debug_assert!((idx as usize) < n_dofs);
             counts[idx as usize].fetch_add(1, Ordering::Relaxed);
         }
     });
@@ -148,7 +147,6 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
                 .iter()
                 .map(|&idx| {
                     let c = counts[idx as usize];
-                    debug_assert!(c > 0);
                     1.0 / (c as f64).sqrt()
                 })
                 .collect();

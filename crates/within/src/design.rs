@@ -174,12 +174,13 @@ mod tests {
     #[test]
     fn build_compacts_large_integer_label() {
         let design = Design::from_levels_for_test(vec![vec![u32::MAX]]);
+        let at = CoefficientAddress {
+            channel: Channel { term: 0, column: 0 },
+            level: u32::MAX,
+        };
 
         assert_eq!(design.n_dofs(), 1);
-        assert_eq!(design.incidence.term(0).levels(), &[0]);
-        assert_eq!(
-            design.incidence.layout().term(0).encoding.label(0),
-            Some(u32::MAX)
-        );
+        assert_eq!(design.incidence.layout().index(at), Some(0));
+        assert_eq!(design.incidence.layout().address(0), Some(at));
     }
 }

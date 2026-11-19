@@ -116,10 +116,4 @@ impl<'a> OrthogonalDesign<'a> {
             })
         })
     }
-
-    /// Whether this design reads `design`'s `E`, not a copy.
-    #[cfg(test)]
-    pub(crate) fn shares_rows_with(&self, design: &Design<'_>) -> bool {
-        std::sync::Arc::ptr_eq(&self.incidence, &design.incidence)
-    }
 }

@@ -99,11 +99,12 @@ fn solvers_built_from_a_borrowed_design_share_its_storage() {
     let w: Vec<f64> = (0..n).map(|i| 1.0 + (i % 5) as f64).collect();
     let y: Vec<f64> = (0..n).map(|i| (i % 7) as f64).collect();
 
+    // `orthogonalize` moves the `E` it is given, so sharing rests on `&Design`'s conversion alone.
+    let shared = super::IntoDesign::into_design(&design).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&shared.incidence, &design.incidence));
+
     let unweighted = Solver::new(&design, None, &PreconditionerConfig::Diagonal).unwrap();
     let weighted = Solver::new(&design, Some(&w), &PreconditionerConfig::Diagonal).unwrap();
-
-    assert!(unweighted.design.shares_rows_with(&design));
-    assert!(weighted.design.shares_rows_with(&design));
     let a = unweighted.solve(&y, None).unwrap();
     let b = weighted.solve(&y, None).unwrap();
     assert!(a.converged && b.converged);

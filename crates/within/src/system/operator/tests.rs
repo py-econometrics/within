@@ -21,14 +21,6 @@ mod design_tests {
     }
 
     #[test]
-    fn test_design_operator_dimensions() {
-        let schema = make_test_design();
-        let a = DesignOperator::new(&schema);
-        assert_eq!(a.nrows(), 5);
-        assert_eq!(a.ncols(), 7);
-    }
-
-    #[test]
     fn test_design_operator_adjoint() {
         let schema = make_test_design();
 

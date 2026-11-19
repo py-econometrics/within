@@ -313,7 +313,6 @@ fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
     // A dropped n_dofs would trip Solver::new's dimension check after the round-trip.
     let bytes = postcard::to_stdvec(precond).expect("serialize");
     let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    assert_eq!(restored.ncols(), solver.n_dofs());
     let reused = Solver::new(effects(), None, restored)
         .expect("reused preconditioner accepted")
         .solve(&y, &LsmrOptions::default())

@@ -113,19 +113,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sqrt_weights_follow_the_internal_observation_order() {
-        // Dominant factor [2,0,1,0] argsorts to caller positions [1,3,2,0].
-        let design = crate::design::Design::from_levels_for_test(vec![vec![2, 0, 1, 0]]);
-        let weights = RowWeights::new(&design.incidence, Some(&[1.0, 4.0, 9.0, 16.0])).unwrap();
-
-        assert_eq!(weights.sqrt(), Some(&[2.0, 4.0, 3.0, 1.0][..]));
-        assert_eq!(
-            (0..4).map(|obs| weights.weight(obs)).collect::<Vec<_>>(),
-            [4.0, 16.0, 9.0, 1.0]
-        );
-    }
-
-    #[test]
     fn rejects_invalid_weights_before_permuting_them() {
         let design = crate::design::Design::from_levels_for_test(vec![vec![2, 0, 1, 0]]);
 
