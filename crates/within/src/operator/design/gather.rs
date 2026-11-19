@@ -59,7 +59,7 @@ struct GatherTerm<'k, 't> {
 impl RowKernel for GatherTerm<'_, '_> {
     #[inline(always)]
     fn fixed<const C: usize>(self, row: impl Fn(usize) -> [f64; C] + Sync) {
-        let cols = std::array::from_fn(|c| &self.src[self.term.layout.column_dofs(c)]);
+        let cols = std::array::from_fn(|c| &self.src[self.term.layout().column_dofs(c)]);
         gather_term(self.chunk, self.row_start, self.term.levels(), cols, row);
     }
 
@@ -71,8 +71,8 @@ impl RowKernel for GatherTerm<'_, '_> {
             let i = self.row_start + local;
             let lev = levels[i] as usize;
             let mut acc = 0.0;
-            for c in 0..t.layout.n_columns() {
-                let coef = self.src[t.layout.column_dofs(c)][lev];
+            for c in 0..t.layout().n_columns() {
+                let coef = self.src[t.layout().column_dofs(c)][lev];
                 acc += match t.loading(c) {
                     None => coef,
                     Some(z) => coef * z[i],

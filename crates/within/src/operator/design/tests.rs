@@ -205,8 +205,8 @@ mod slope_design_tests {
     fn dense_matrix(design: &OrthogonalDesign<'_>) -> Vec<Vec<f64>> {
         let mut d = vec![vec![0.0; design.n_dofs()]; design.n_obs()];
         for t in design.terms() {
-            for c in 0..t.layout.n_columns() {
-                let base = t.layout.column_dofs(c).start;
+            for c in 0..t.layout().n_columns() {
+                let base = t.layout().column_dofs(c).start;
                 let z = t.loading(c);
                 for (i, &lev) in t.levels().iter().enumerate() {
                     d[i][base + lev as usize] = z.map_or(1.0, |z| z[i]);

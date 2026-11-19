@@ -34,7 +34,7 @@ impl<'p> Gramian<'p> {
         let mut diag = vec![0.0; layout.n_dofs()];
         if let Some(column) = layout.intercept_column() {
             // `diag(E_tᵀ W E_t)`: per level `Σ w`, summed in observation order.
-            let (rows, weights) = (&self.design.incidence.terms[term], &self.design.weights);
+            let (rows, weights) = (self.design.incidence.term(term), &self.design.weights);
             let sums = &mut diag[layout.block_column(column)];
             if let Some(offsets) = rows.sorted_runs() {
                 // A sorted level is one run: a register sum keeps its order with no store per row.
@@ -80,7 +80,7 @@ impl<'p> Gramian<'p> {
             self.design.term(pair.cols.term),
         );
         fn side<'p>(term: &TermBlock<'p>, column: usize) -> FactorWidth1<'p, f64> {
-            let (n, levels) = (term.layout.n_levels(), term.levels());
+            let (n, levels) = (term.layout().n_levels(), term.levels());
             match term.loading(column) {
                 Some(z) => FactorWidth1::valued(n, levels, z),
                 None => FactorWidth1::new(n, levels),
@@ -147,8 +147,8 @@ mod tests {
     fn observation_sums(prepared: &OrthogonalDesign<'_>) -> Vec<f64> {
         let mut entries = vec![Vec::new(); prepared.n_dofs()];
         for term in prepared.terms() {
-            for column in 0..term.layout.n_columns() {
-                let block = &mut entries[term.layout.column_dofs(column)];
+            for column in 0..term.layout().n_columns() {
+                let block = &mut entries[term.layout().column_dofs(column)];
                 let z = term.loading(column);
                 for (obs, &level) in term.levels().iter().enumerate() {
                     let w = prepared.weights().weight(obs);

@@ -35,8 +35,8 @@ impl<B: Fn(usize) -> f64 + Sync> RowKernel for ScatterTerm<'_, '_, B> {
     #[inline(always)]
     fn dynamic(self) {
         let (t, base) = (self.term, self.base);
-        for c in 0..t.layout.n_columns() {
-            let slot = &mut self.block[t.layout.block_column(c)];
+        for c in 0..t.layout().n_columns() {
+            let slot = &mut self.block[t.layout().block_column(c)];
             match t.loading(c) {
                 None => scatter_term::<1>(slot, t, |i| [base(i)]),
                 Some(z) => scatter_term::<1>(slot, t, move |i| [z[i] * base(i)]),
@@ -51,7 +51,7 @@ fn scatter_term<const C: usize>(
     term: &TermBlock<'_>,
     values: impl Fn(usize) -> [f64; C] + Sync,
 ) {
-    let n_levels = term.layout.n_levels();
+    let n_levels = term.layout().n_levels();
     debug_assert_eq!(block.len(), C * n_levels);
     let mut columns = block.chunks_mut(n_levels);
     let columns = Columns(std::array::from_fn(|_| columns.next().expect("C columns")));

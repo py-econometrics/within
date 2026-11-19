@@ -8,7 +8,7 @@ use super::level_moments::{LevelMean, LevelMoments};
 use super::RowWeights;
 use crate::domain::design::Slopes;
 use crate::domain::incidence::LEVEL_GROUP;
-use crate::domain::{TermLayout, TermRows};
+use crate::domain::{TermIncidence, TermLayout};
 use crate::linalg::{dot, GramBasisWorkspace};
 
 /// Rows per parallel task of a sweep's row pass.
@@ -29,13 +29,12 @@ pub(crate) struct OrthogonalSlopes {
 }
 
 impl Slopes<'_> {
-    /// `X̃_t` and `R_t` by two weighted Cholesky QR passes over each level of `rows`, in place.
+    /// `X̃_t` and `R_t` by two weighted Cholesky QR passes over each level of `term`, in place.
     /// Unidentified directions become zero columns, so they solve to `0`.
     /// Two passes (CholeskyQR2) leave an orthonormality error of eps, not eps·κ(G).
     pub(super) fn orthogonalize(
         self,
-        rows: &TermRows<'_>,
-        layout: &TermLayout,
+        term: TermIncidence<'_>,
         weights: &RowWeights,
     ) -> OrthogonalSlopes {
         let mut columns: Vec<Vec<f64>> = self
@@ -46,7 +45,8 @@ impl Slopes<'_> {
                 Cow::Borrowed(z) => z.par_iter().with_min_len(ROW_CHUNK).copied().collect(),
             })
             .collect();
-        let (n_levels, v) = (layout.n_levels(), columns.len());
+        let (layout, v) = (term.layout(), columns.len());
+        let n_levels = layout.n_levels();
         if v == 0 {
             return OrthogonalSlopes {
                 columns,
@@ -56,20 +56,20 @@ impl Slopes<'_> {
                 weightless: Vec::new(),
             };
         }
-        let moments = LevelMoments::build(rows, layout, &views(&columns), weights);
+        let moments = LevelMoments::build(term, &views(&columns), weights);
         let (first, kept) = Sweeps::orthonormalize(&moments, n_levels, v);
         let weightless = match layout.intercept() {
             true => (0..n_levels).map(|l| moments.weightless(l)).collect(),
             false => Vec::new(),
         };
         drop(moments);
-        first.apply(rows.levels(), &mut columns);
+        first.apply(term.levels(), &mut columns);
 
         // The rank tolerance keeps the first pass well-conditioned, so this one drops nothing.
-        let moments = LevelMoments::build(rows, layout, &views(&columns), weights);
+        let moments = LevelMoments::build(term, &views(&columns), weights);
         let (second, _) = Sweeps::orthonormalize(&moments, n_levels, v);
         drop(moments);
-        second.apply(rows.levels(), &mut columns);
+        second.apply(term.levels(), &mut columns);
 
         let (factor, shift) = first.compose(&second);
         OrthogonalSlopes {

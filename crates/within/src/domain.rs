@@ -6,8 +6,10 @@ mod orthogonal;
 
 pub use design::{Design, Effect};
 pub use incidence::CoefficientLayout;
+#[cfg(test)]
+pub(crate) use incidence::ScatterSplit;
 pub(crate) use incidence::{
-    Column, FactorEncoding, Incidence, LevelSlots, RowIndex, ScatterSplit, TermLayout, TermRows,
+    Column, FactorEncoding, Incidence, LevelSlots, TermIncidence, TermLayout,
 };
 pub(crate) use orthogonal::{Gramian, OrthogonalDesign, RowKernel, TermBlock};
 

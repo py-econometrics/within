@@ -239,9 +239,9 @@ fn max_abs_group_mean(design: &OrthogonalDesign<'_>, demeaned: &[f64]) -> f64 {
     let demeaned = design.incidence().permute_obs_in(demeaned);
     design
         .terms()
-        .filter(|t| t.layout.intercept())
+        .filter(|t| t.layout().intercept())
         .map(|t| {
-            let (layout, levels) = (t.layout, t.levels());
+            let (layout, levels) = (t.layout(), t.levels());
             let mut sums = vec![0.0f64; layout.n_levels()];
             let mut counts = vec![0.0f64; layout.n_levels()];
             for (obs, &level) in levels.iter().enumerate() {

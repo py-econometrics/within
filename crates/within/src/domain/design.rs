@@ -6,13 +6,10 @@ pub use effect::Effect;
 
 use crate::BuildError;
 use ndarray::{ArrayView2, Axis};
-use rayon::prelude::*;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use super::{
-    CoefficientLayout, FactorEncoding, Incidence, RowIndex, ScatterSplit, TermLayout, TermRows,
-};
+use super::{CoefficientLayout, FactorEncoding, Incidence, TermLayout};
 
 /// Fixed-effects design `D = E • X`: per term, row `i` is `X`'s row `[1?, z(i)]` in level `i`'s
 /// columns. Clones share `E`.
@@ -85,7 +82,7 @@ impl<'a> Design<'a> {
             offset = term.dofs().end;
             layout.push(term);
             levels.push(f.levels);
-            slopes.push(Slopes { columns: e.slopes });
+            slopes.push(e.slopes);
         }
         let layout = CoefficientLayout {
             terms: layout.into(),
@@ -96,63 +93,27 @@ impl<'a> Design<'a> {
             return Err(BuildError::DofSpaceExceedsU32 { n_dofs });
         }
 
-        // Sort by the dominant term so its gather/scatter runs sequentially.
-        let dominant = layout.dominant();
-        let n_levels = |t: usize| layout.term(t).n_levels();
-        let (dominant_split, obs_perm) =
-            match ScatterSplit::of_sorted(&levels[dominant], n_levels(dominant)) {
-                Some(split) => (split, None),
-                None => {
-                    let (offsets, perm) = RowIndex::argsort(&levels[dominant], n_levels(dominant));
-                    for levels in levels.iter_mut() {
-                        *levels = Cow::Owned(perm.gather(levels));
-                    }
-                    // Level columns before any slope: interleaving them measured +2–4% here.
-                    for slope in slopes.iter_mut().flat_map(|s| &mut s.columns) {
-                        *slope = Cow::Owned(perm.gather(slope));
-                    }
-                    (ScatterSplit::sorted(offsets), Some(perm))
-                }
-            };
-        let dominant_rows = TermRows {
-            levels: levels.remove(dominant),
-            split: dominant_split,
-        };
-        let others: Vec<usize> = (0..layout.n_terms()).filter(|&t| t != dominant).collect();
-        // Factors nested in the dominant one come out sorted and need no row index.
-        let mut terms: Vec<TermRows> = levels
-            .into_par_iter()
-            .zip(others)
-            .map(|(levels, t)| TermRows {
-                split: ScatterSplit::new(&levels, n_levels(t)),
-                levels,
+        let incidence = Incidence::new(levels, layout);
+        // Level columns before any slope: interleaving them measured +2–4% here.
+        let slopes = slopes
+            .into_iter()
+            .map(|columns| Slopes {
+                columns: columns
+                    .into_iter()
+                    .map(|z| incidence.permute_obs_in(z))
+                    .collect(),
             })
             .collect();
-        terms.insert(dominant, dominant_rows);
-
         Ok(Design {
-            incidence: Arc::new(Incidence {
-                layout,
-                terms,
-                obs_perm,
-            }),
+            incidence: Arc::new(incidence),
             slopes,
         })
     }
 
     /// Convert every column to owned, dropping ties to caller buffers.
     pub fn into_owned(self) -> Design<'static> {
-        let Incidence {
-            layout,
-            terms,
-            obs_perm,
-        } = Arc::unwrap_or_clone(self.incidence);
         Design {
-            incidence: Arc::new(Incidence {
-                layout,
-                terms: terms.into_iter().map(TermRows::into_owned).collect(),
-                obs_perm,
-            }),
+            incidence: Arc::new(Arc::unwrap_or_clone(self.incidence).into_owned()),
             slopes: self
                 .slopes
                 .into_iter()
@@ -170,7 +131,7 @@ impl<'a> Design<'a> {
     /// Number of categorical factors in the design.
     #[inline]
     pub fn n_factors(&self) -> usize {
-        self.incidence.layout.n_terms()
+        self.incidence.layout().n_terms()
     }
 
     /// Number of observations (rows of D).
@@ -182,7 +143,7 @@ impl<'a> Design<'a> {
     /// Total degrees of freedom (columns of D).
     #[inline]
     pub fn n_dofs(&self) -> usize {
-        self.incidence.layout.n_dofs()
+        self.incidence.layout().n_dofs()
     }
 }
 
@@ -204,9 +165,9 @@ mod tests {
         let design = Design::from_levels_for_test(vec![vec![u32::MAX]]);
 
         assert_eq!(design.n_dofs(), 1);
-        assert_eq!(design.incidence.terms[0].levels(), &[0]);
+        assert_eq!(design.incidence.term(0).levels(), &[0]);
         assert_eq!(
-            design.incidence.layout.term(0).encoding.label(0),
+            design.incidence.layout().term(0).encoding.label(0),
             Some(u32::MAX)
         );
     }

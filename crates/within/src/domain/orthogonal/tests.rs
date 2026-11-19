@@ -156,11 +156,11 @@ fn a_large_offset_still_orthogonalizes_to_the_identity() {
 /// intercept included, are orthogonal to `tol` relative to their norms.
 fn assert_level_grams_orthonormal(prepared: &OrthogonalDesign<'_>, term: usize, tol: f64) {
     let t = prepared.term(term);
-    let (levels, width) = (t.levels(), t.layout.n_columns());
-    let first_slope = usize::from(t.layout.intercept());
+    let (levels, width) = (t.levels(), t.layout().n_columns());
+    let first_slope = usize::from(t.layout().intercept());
     let w = |i: usize| prepared.weights().weight(i);
     let a = |i: usize, c: usize| t.loading(c).map_or(1.0, |z| z[i]);
-    let mut grams = vec![0.0; t.layout.n_levels() * width * width];
+    let mut grams = vec![0.0; t.layout().n_levels() * width * width];
     for (i, &level) in levels.iter().enumerate() {
         let g = &mut grams[level as usize * width * width..][..width * width];
         for j in 0..width {
@@ -272,7 +272,7 @@ fn near_collinear_large_mean_slopes_stay_orthonormal(
         .orthogonalize(weights.as_deref())
         .unwrap();
     let expected: Vec<CoefficientPosition> = if weighting == "zero weights" {
-        (0..prepared.term(0).layout.n_columns())
+        (0..prepared.term(0).layout().n_columns())
             .map(|column| CoefficientPosition {
                 channel: Channel { term: 0, column },
                 level: 0,
@@ -357,7 +357,7 @@ fn orthogonalization_is_bitwise_identical_across_thread_counts() {
                 .terms()
                 .filter(|t| matches!(t.split(), ScatterSplit::ByLevel(_)))
                 .map(|t| {
-                    let mut rows = vec![0usize; t.layout.n_levels()];
+                    let mut rows = vec![0usize; t.layout().n_levels()];
                     for &l in t.levels() {
                         rows[l as usize] += 1;
                     }

@@ -1,7 +1,7 @@
 //! Per-level weighted moments of a term's slopes, the input to one orthogonalization pass.
 
 use super::RowWeights;
-use crate::domain::{TermLayout, TermRows};
+use crate::domain::TermIncidence;
 
 /// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
 pub(crate) struct LevelMoments {
@@ -20,7 +20,7 @@ fn tri_index(j: usize, k: usize) -> usize {
 
 /// A term's positive-weight rows, folded per level in the pieces its split fixes.
 struct WeightedRows<'a> {
-    rows: &'a TermRows<'a>,
+    term: TermIncidence<'a>,
     n_levels: usize,
     weights: &'a RowWeights,
 }
@@ -34,7 +34,7 @@ impl WeightedRows<'_> {
         merge: impl Fn(&mut S, &S) + Sync,
     ) -> Vec<S> {
         let mut states = vec![init; self.n_levels];
-        self.rows.fold(
+        self.term.fold(
             init,
             &|s: &mut S, level, obs| {
                 let w = self.weights.weight(obs);
@@ -195,14 +195,10 @@ impl LevelMeans {
 }
 
 impl LevelMoments {
-    pub(crate) fn build(
-        rows: &TermRows<'_>,
-        layout: &TermLayout,
-        zs: &[&[f64]],
-        weights: &RowWeights,
-    ) -> Self {
+    pub(crate) fn build(term: TermIncidence<'_>, zs: &[&[f64]], weights: &RowWeights) -> Self {
+        let layout = term.layout();
         let rows = WeightedRows {
-            rows,
+            term,
             n_levels: layout.n_levels(),
             weights,
         };

@@ -63,7 +63,7 @@ impl Operator for DesignOperator<'_> {
         debug_assert_eq!(x.len(), self.design.n_obs());
         debug_assert_eq!(y.len(), self.design.n_dofs());
         for t in self.design.terms() {
-            let block = &mut y[t.layout.dofs()];
+            let block = &mut y[t.layout().dofs()];
             match self.design.weights().sqrt() {
                 Some(sw) => scatter_block(&t, block, &|i| sw[i] * x[i]),
                 None => scatter_block(&t, block, &|i| x[i]),

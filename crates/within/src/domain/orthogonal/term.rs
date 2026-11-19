@@ -2,15 +2,13 @@
 //! reads it through.
 
 use super::OrthogonalDesign;
-use crate::domain::{Column, LevelSlots, TermLayout, TermRows};
+use crate::domain::{Column, LevelSlots, TermIncidence, TermLayout};
 
 /// Term `t`'s block `D̃_t`: row `i` holds `r(i) = [1?, u_1(i), …, u_v(i)]` in the columns of
 /// level `level(i)`. Hides how the design stores rows and slopes.
 #[derive(Clone, Copy)]
 pub(crate) struct TermBlock<'p> {
-    /// Where the block's coefficients sit.
-    pub(crate) layout: &'p TermLayout,
-    rows: &'p TermRows<'p>,
+    incidence: TermIncidence<'p>,
     /// Orthogonalized slopes in column order; empty for a slope-free term.
     slopes: &'p [Vec<f64>],
 }
@@ -19,14 +17,13 @@ impl OrthogonalDesign<'_> {
     /// Term `term`'s block.
     pub(crate) fn term(&self, term: usize) -> TermBlock<'_> {
         TermBlock {
-            layout: self.incidence.layout.term(term),
-            rows: &self.incidence.terms[term],
+            incidence: self.incidence.term(term),
             slopes: self.slopes[term].columns(),
         }
     }
 
     pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = TermBlock<'_>> {
-        (0..self.incidence.layout.n_terms()).map(|term| self.term(term))
+        (0..self.layout().n_terms()).map(|term| self.term(term))
     }
 }
 
@@ -39,14 +36,19 @@ pub(crate) trait RowKernel {
 }
 
 impl<'p> TermBlock<'p> {
+    /// Where the block's coefficients sit.
+    pub(crate) fn layout(&self) -> &'p TermLayout {
+        self.incidence.layout()
+    }
+
     /// The level of every row.
     pub(crate) fn levels(&self) -> &'p [u32] {
-        self.rows.levels()
+        self.incidence.levels()
     }
 
     /// Column `column`'s loading; `None` is the intercept.
     pub(crate) fn loading(&self, column: usize) -> Option<&'p [f64]> {
-        match self.layout.column(column) {
+        match self.layout().column(column) {
             Column::Intercept => None,
             Column::Slope(j) => Some(&self.slopes[j][..]),
         }
@@ -62,7 +64,7 @@ impl<'p> TermBlock<'p> {
     #[inline(always)]
     pub(crate) fn visit_rows(&self, kernel: impl RowKernel) {
         let z = |j: usize| &self.slopes[j][..];
-        match (self.layout.intercept(), self.slopes.len()) {
+        match (self.layout().intercept(), self.slopes.len()) {
             (true, 0) => kernel.fixed(|_| [1.0]),
             (true, 1) => {
                 let z0 = z(0);
@@ -100,11 +102,11 @@ impl<'p> TermBlock<'p> {
         merge: &(impl Fn(&mut S, &S) + Sync),
         out: impl LevelSlots<S>,
     ) {
-        self.rows.fold(init, step, merge, out);
+        self.incidence.fold(init, step, merge, out);
     }
 
     #[cfg(test)]
     pub(crate) fn split(&self) -> &'p crate::domain::ScatterSplit {
-        &self.rows.split
+        self.incidence.split()
     }
 }

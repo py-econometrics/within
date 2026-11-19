@@ -43,10 +43,7 @@ impl<'a> Design<'a> {
         let slopes = slopes
             .into_par_iter()
             .enumerate()
-            .map(|(term, slopes)| {
-                let (rows, layout) = (&incidence.terms[term], incidence.layout.term(term));
-                slopes.orthogonalize(rows, layout, &weights)
-            })
+            .map(|(term, slopes)| slopes.orthogonalize(incidence.term(term), &weights))
             .collect();
         Ok(OrthogonalDesign {
             incidence,
@@ -74,7 +71,7 @@ impl<'a> OrthogonalDesign<'a> {
     }
 
     pub(crate) fn n_dofs(&self) -> usize {
-        self.incidence.layout.n_dofs()
+        self.layout().n_dofs()
     }
 
     /// Map solve-basis coefficients back to the caller's parametrization: `x ← R·x`.
