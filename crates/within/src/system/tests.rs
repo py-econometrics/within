@@ -256,11 +256,11 @@ fn near_collinear_large_mean_slopes_stay_orthonormal(
     assert_level_grams_orthonormal(&prepared, 0, 1e-14);
 }
 
-/// Row-split terms, a level past one leaf, and several level and row chunks: every piece the
-/// split fixes runs, so only scheduling varies with the thread count.
+/// By-row terms, a level past one leaf, and several level and row chunks: every piece the
+/// reduction fixes runs, so only scheduling varies with the thread count.
 #[test]
 fn orthogonalization_is_bitwise_identical_across_thread_counts() {
-    use crate::design::ScatterSplit;
+    use crate::design::LevelReduction;
     use rand::rngs::SmallRng;
     use rand::{RngExt, SeedableRng};
     let n: usize = 300_000;
@@ -322,11 +322,11 @@ fn orthogonalization_is_bitwise_identical_across_thread_counts() {
                 .collect();
             let row_split = design
                 .terms()
-                .filter(|t| matches!(t.split(), ScatterSplit::ByRow))
+                .filter(|t| matches!(t.reduction(), LevelReduction::ByRow))
                 .count();
             let largest_by_level = design
                 .terms()
-                .filter(|t| matches!(t.split(), ScatterSplit::ByLevel(_)))
+                .filter(|t| matches!(t.reduction(), LevelReduction::ByLevel(_)))
                 .map(|t| {
                     let mut rows = vec![0usize; t.layout().n_levels()];
                     for &l in t.levels() {

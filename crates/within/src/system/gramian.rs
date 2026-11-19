@@ -31,7 +31,7 @@ impl<'p> Gramian<'p> {
         let layout = self.layout().term(term);
         let mut diag = vec![0.0; layout.n_dofs()];
         if let Some(column) = layout.intercept_column() {
-            // `diag(E_tᵀ W E_t)`: per level `Σ w`, in the pieces the term's split fixes.
+            // `diag(E_tᵀ W E_t)`: per level `Σ w`, in the pieces the term's reduction fixes.
             let (rows, sums) = (
                 self.design.incidence.term(term),
                 &mut diag[layout.block_column(column)],

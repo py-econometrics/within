@@ -83,7 +83,7 @@ impl<'p> TermBlock<'p> {
         }
     }
 
-    /// Each level's fold of its rows, in the pieces the row split fixes: see [`ScatterSplit::fold`].
+    /// Each level's fold of its rows, in the pieces its reduction fixes: see [`LevelReduction::fold`].
     pub(crate) fn fold<S: Copy + Send + Sync>(
         &self,
         init: S,
@@ -95,7 +95,7 @@ impl<'p> TermBlock<'p> {
     }
 
     #[cfg(test)]
-    pub(crate) fn split(&self) -> &'p crate::design::ScatterSplit {
-        self.incidence.split()
+    pub(crate) fn reduction(&self) -> &'p crate::design::LevelReduction {
+        self.incidence.reduction()
     }
 }

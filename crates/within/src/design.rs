@@ -12,7 +12,7 @@ pub use effect::Effect;
 pub use incidence::CoefficientLayout;
 pub(crate) use incidence::{Column, Incidence, LevelSlots, TermIncidence, TermLayout, LEVEL_GROUP};
 #[cfg(test)]
-pub(crate) use incidence::{ScatterSplit, LEVEL_LEAF};
+pub(crate) use incidence::{LevelReduction, LEVEL_LEAF};
 pub(crate) use term::{RowKernel, TermBlock};
 
 use crate::BuildError;

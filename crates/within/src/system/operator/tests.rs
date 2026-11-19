@@ -195,7 +195,7 @@ mod design_tests {
 
 mod slope_design_tests {
     use super::noise;
-    use crate::design::{Channel, Design, Effect, ScatterSplit};
+    use crate::design::{Channel, Design, Effect, LevelReduction};
     use crate::system::DesignOperator;
     use crate::system::OrthogonalDesign;
     use schwarz_precond::Operator;
@@ -280,7 +280,7 @@ mod slope_design_tests {
     }
 
     /// By-level (sorted or indexed) and by-row terms per fused arity; levels over many leaves.
-    fn scatter_split_design() -> OrthogonalDesign<'static> {
+    fn level_reduction_design() -> OrthogonalDesign<'static> {
         let n: usize = 300_000;
         // Largest term and already sorted, so the locality sort leaves every fixture as built.
         let sorted: Vec<u32> = (0..n).map(|i| (i * 160_000 / n) as u32).collect();
@@ -321,7 +321,7 @@ mod slope_design_tests {
     /// The adjoint's bits must not depend on the pool it runs in.
     #[test]
     fn adjoint_is_pool_independent() {
-        let design = scatter_split_design();
+        let design = level_reduction_design();
         let r: Vec<f64> = (0..design.n_obs()).map(|i| noise(29 * i + 5)).collect();
         let adjoint_in = |threads: usize| {
             rayon::ThreadPoolBuilder::new()
@@ -345,8 +345,8 @@ mod slope_design_tests {
 
     /// ⟨Dx, r⟩ = ⟨x, Dᵀr⟩, weighted, with each adjoint sum on each fused arity.
     #[test]
-    fn slope_adjoint_property_each_scatter_split() {
-        let design = scatter_split_design();
+    fn slope_adjoint_property_each_level_reduction() {
+        let design = level_reduction_design();
         let n = design.n_obs();
 
         // By level unless unsorted with at least 12 rows per level.
@@ -354,7 +354,10 @@ mod slope_design_tests {
             true, true, true, false, true, true, false, true, true, false,
         ];
         for (t, by_level) in design.terms().zip(by_level) {
-            assert_eq!(matches!(t.split(), ScatterSplit::ByLevel(_)), by_level);
+            assert_eq!(
+                matches!(t.reduction(), LevelReduction::ByLevel(_)),
+                by_level
+            );
         }
         assert!(matches!(
             design.incidence().permute_obs_in(&[0.0; 300_000]),

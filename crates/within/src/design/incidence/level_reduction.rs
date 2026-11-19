@@ -1,4 +1,4 @@
-//! How a term's scatter-add splits into fixed parallel pieces, chosen from its rows alone.
+//! How a term's per-level reduction `E_tᵀ` is cut into fixed parallel pieces, chosen from its rows.
 
 use std::ops::Range;
 
@@ -37,20 +37,20 @@ impl<S: Send> LevelSlots<S> for &mut [S] {
     }
 }
 
-/// The split of `z[l] = Σ_{level(i) = l} vᵢ` into pieces; the thread count only schedules them.
+/// The pieces of `z[l] = Σ_{level(i) = l} vᵢ`; the thread count only schedules them.
 #[derive(Clone, Debug)]
-pub(crate) enum ScatterSplit {
+pub(crate) enum LevelReduction {
     /// Each level sums its own rows: fixed row blocks in row order, added by a fixed binary tree.
     ByLevel(LevelRows),
     /// Fixed row blocks scatter into partial blocks that a fixed binary tree adds up.
     ByRow,
 }
 
-impl ScatterSplit {
-    /// The split of `levels`.
+impl LevelReduction {
+    /// The reduction of `levels`.
     pub(crate) fn new(levels: &[u32], n_levels: usize) -> Self {
-        if let Some(split) = Self::of_sorted(levels, n_levels) {
-            return split;
+        if let Some(reduction) = Self::of_sorted(levels, n_levels) {
+            return reduction;
         }
         if levels.len() >= FOLD_ROWS_PER_LEVEL * n_levels {
             return Self::ByRow;
@@ -62,7 +62,7 @@ impl ScatterSplit {
         })
     }
 
-    /// The split of `levels` if they are non-decreasing, else `None`.
+    /// The reduction of `levels` if they are non-decreasing, else `None`.
     pub(crate) fn of_sorted(levels: &[u32], n_levels: usize) -> Option<Self> {
         let mut offsets = vec![0; n_levels + 1];
         let mut previous = None;
@@ -80,7 +80,7 @@ impl ScatterSplit {
         Some(Self::sorted(offsets))
     }
 
-    /// The split of sorted rows whose level `l` owns rows `offsets[l]..offsets[l + 1]`.
+    /// The reduction of sorted rows whose level `l` owns rows `offsets[l]..offsets[l + 1]`.
     pub(crate) fn sorted(offsets: Vec<usize>) -> Self {
         Self::ByLevel(LevelRows {
             offsets,
@@ -89,8 +89,8 @@ impl ScatterSplit {
     }
 }
 
-impl ScatterSplit {
-    /// Each level's fold of its rows: `step(state, level, row)` from `init` over pieces this split
+impl LevelReduction {
+    /// Each level's fold of its rows: `step(state, level, row)` from `init` over pieces this reduction
     /// fixes, `merge`d left to right in a fixed binary tree; threads only schedule the pieces.
     pub(crate) fn fold<S: Copy + Send + Sync, O: LevelSlots<S>>(
         &self,
@@ -205,19 +205,19 @@ impl LevelRows {
 
 #[cfg(test)]
 mod tests {
-    use super::{LevelRows, ScatterSplit};
+    use super::{LevelReduction, LevelRows};
 
     #[test]
     fn of_sorted_counts_runs_and_rejects_a_descent() {
-        let split = ScatterSplit::of_sorted(&[0, 0, 1, 3, 3], 4).unwrap();
-        let ScatterSplit::ByLevel(LevelRows {
+        let reduction = LevelReduction::of_sorted(&[0, 0, 1, 3, 3], 4).unwrap();
+        let LevelReduction::ByLevel(LevelRows {
             offsets,
             rows: None,
-        }) = split
+        }) = reduction
         else {
             panic!("sorted levels split by level without a row index")
         };
         assert_eq!(offsets, [0, 2, 3, 3, 5]);
-        assert!(ScatterSplit::of_sorted(&[1, 1, 0], 2).is_none());
+        assert!(LevelReduction::of_sorted(&[1, 1, 0], 2).is_none());
     }
 }

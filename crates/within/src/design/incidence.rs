@@ -2,16 +2,16 @@
 
 mod encoding;
 mod layout;
+mod level_reduction;
 mod row_index;
-mod scatter_split;
 
 pub(crate) use encoding::FactorEncoding;
 pub use layout::CoefficientLayout;
 pub(crate) use layout::{Column, TermLayout};
-pub(crate) use row_index::RowIndex;
 #[cfg(test)]
-pub(crate) use scatter_split::LEVEL_LEAF;
-pub(crate) use scatter_split::{LevelSlots, ScatterSplit, LEVEL_GROUP};
+pub(crate) use level_reduction::LEVEL_LEAF;
+pub(crate) use level_reduction::{LevelReduction, LevelSlots, LEVEL_GROUP};
+pub(crate) use row_index::RowIndex;
 
 use std::borrow::Cow;
 
@@ -23,7 +23,7 @@ pub(crate) struct TermRows<'a> {
     /// Internal level position of every observation.
     levels: Cow<'a, [u32]>,
     /// The rows of each level, as the scatter-add splits them.
-    split: ScatterSplit,
+    reduction: LevelReduction,
 }
 
 /// `E_t`: term `t`'s level of each row, and where its coefficients sit.
@@ -44,7 +44,7 @@ impl<'p> TermIncidence<'p> {
         &self.rows.levels
     }
 
-    /// Each level's fold of its rows, in the pieces the row split fixes: see [`ScatterSplit::fold`].
+    /// Each level's fold of its rows, in the pieces its reduction fixes: see [`LevelReduction::fold`].
     pub(crate) fn fold<S: Copy + Send + Sync>(
         &self,
         init: S,
@@ -53,13 +53,13 @@ impl<'p> TermIncidence<'p> {
         out: impl LevelSlots<S>,
     ) {
         self.rows
-            .split
+            .reduction
             .fold(&self.rows.levels, init, step, merge, out);
     }
 
     #[cfg(test)]
-    pub(crate) fn split(&self) -> &'p ScatterSplit {
-        &self.rows.split
+    pub(crate) fn reduction(&self) -> &'p LevelReduction {
+        &self.rows.reduction
     }
 }
 
@@ -67,7 +67,7 @@ impl TermRows<'_> {
     fn into_owned(self) -> TermRows<'static> {
         TermRows {
             levels: Cow::Owned(self.levels.into_owned()),
-            split: self.split,
+            reduction: self.reduction,
         }
     }
 }
@@ -89,20 +89,20 @@ impl<'a> Incidence<'a> {
     pub(super) fn new(mut levels: Vec<Cow<'a, [u32]>>, layout: CoefficientLayout) -> Self {
         let dominant = layout.dominant();
         let n_levels = |t: usize| layout.term(t).n_levels();
-        let (dominant_split, obs_perm) =
-            match ScatterSplit::of_sorted(&levels[dominant], n_levels(dominant)) {
+        let (dominant_reduction, obs_perm) =
+            match LevelReduction::of_sorted(&levels[dominant], n_levels(dominant)) {
                 Some(split) => (split, None),
                 None => {
                     let (offsets, perm) = RowIndex::argsort(&levels[dominant], n_levels(dominant));
                     for levels in levels.iter_mut() {
                         *levels = Cow::Owned(perm.gather(levels));
                     }
-                    (ScatterSplit::sorted(offsets), Some(perm))
+                    (LevelReduction::sorted(offsets), Some(perm))
                 }
             };
         let dominant_rows = TermRows {
             levels: levels.remove(dominant),
-            split: dominant_split,
+            reduction: dominant_reduction,
         };
         let others: Vec<usize> = (0..layout.n_terms()).filter(|&t| t != dominant).collect();
         // Factors nested in the dominant one come out sorted and need no row index.
@@ -110,7 +110,7 @@ impl<'a> Incidence<'a> {
             .into_par_iter()
             .zip(others)
             .map(|(levels, t)| TermRows {
-                split: ScatterSplit::new(&levels, n_levels(t)),
+                reduction: LevelReduction::new(&levels, n_levels(t)),
                 levels,
             })
             .collect();

@@ -1,5 +1,5 @@
 //! Scatter: observation space → coefficient space, `x_t = D_tᵀ (s ⊙ v)`, summed per term in the
-//! order its [`ScatterSplit`] fixes.
+//! order its [`LevelReduction`] fixes.
 
 use rayon::prelude::*;
 

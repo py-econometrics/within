@@ -18,7 +18,7 @@ fn tri_index(j: usize, k: usize) -> usize {
     j * (j + 1) / 2 + k
 }
 
-/// A term's positive-weight rows, folded per level in the pieces its split fixes.
+/// A term's positive-weight rows, folded per level in the pieces its reduction fixes.
 struct WeightedRows<'a> {
     term: TermIncidence<'a>,
     n_levels: usize,
