@@ -36,8 +36,8 @@
 //!
 //! let a = Diag(vec![2.0, 3.0]);
 //! let none = IdentityOp { n: 2 };
-//! let r = mlsmr(&a, &[4.0, 9.0], &none, 1e-10, 50, MlsmrOptions::default()).unwrap();
-//! assert!(r.converged);
+//! let r = mlsmr(&a, &[4.0, 9.0], &none, 1e-10, 50, None, MlsmrOptions::default()).unwrap();
+//! assert!(r.converged());
 //! assert!((r.x[0] - 2.0).abs() < 1e-6);
 //! assert!((r.x[1] - 3.0).abs() < 1e-6);
 //! ```

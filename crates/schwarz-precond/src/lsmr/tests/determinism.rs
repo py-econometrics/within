@@ -96,6 +96,6 @@ fn mlsmr_returns_the_same_bits_at_any_thread_count(
         ..MlsmrOptions::default()
     };
     assert_pool_independent(|| {
-        fingerprint(&mlsmr(&op, &b, &m, 1e-14, 40, options).expect("mlsmr"))
+        fingerprint(&mlsmr(&op, &b, &m, 1e-14, 40, None, options).expect("mlsmr"))
     });
 }

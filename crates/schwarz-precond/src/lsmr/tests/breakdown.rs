@@ -15,7 +15,7 @@ fn zero_second_row_solve(b: &[f64]) -> LsmrResult {
 #[test]
 fn test_mlsmr_mid_stream_beta_zero_breakdown() {
     let result = zero_second_row_solve(&[5.0, 0.0]);
-    assert!(result.converged);
+    assert!(result.converged());
     assert_eq!(result.iterations, 1);
     assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
     assert!((result.x[0] - 5.0).abs() < 1e-12);
@@ -50,7 +50,7 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
 
     let b = vec![0.0, 1.0];
     let result = lsmr(&ColE1, &b, 1e-12, 100, None).expect("lsmr alpha=0 early exit");
-    assert!(result.converged);
+    assert!(result.converged());
     assert_eq!(result.iterations, 0);
     assert_eq!(result.x, vec![0.0; 1]);
     assert_eq!(
@@ -63,17 +63,14 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
 /// Every case below reaches the `α₁ = 0` exit: `diag(m)` annihilates `Aᵀ rhs`, or squaring an
 /// already-tiny gradient underflows.
 fn zero_initial_gradient(a: &[f64], m: &[f64], b: &[f64], x0: Option<&[f64]>) -> LsmrResult {
-    let options = MlsmrOptions {
-        warm_start: x0,
-        ..Default::default()
-    };
     mlsmr(
         &DiagOp(a.to_vec()),
         b,
         &DiagOp(m.to_vec()),
         1e-10,
         100,
-        options,
+        x0,
+        MlsmrOptions::default(),
     )
     .expect("α₁ = 0 exit")
 }
@@ -101,7 +98,7 @@ fn a_zero_initial_gradient_the_metric_cannot_see_is_refused(
     let result = zero_initial_gradient(a, &[1.0, 0.0], b, x0);
     let residual = normal_equation_residual(&DiagOp(a.to_vec()), &result.x, b);
 
-    assert!(!result.converged, "{:?}", result.stop_reason);
+    assert!(!result.converged(), "{:?}", result.stop_reason);
     assert_eq!(result.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(result.iterations, 0);
     assert!((residual / unsolved - 1.0).abs() < 1e-3, "{residual:e}");
@@ -116,7 +113,7 @@ fn an_underflowed_alpha_is_a_scale_not_a_breakdown(#[case] m: &[f64]) {
     let b = &[1e100, 1e-100];
     let result = zero_initial_gradient(a, m, b, None);
 
-    assert!(result.converged, "{:?}", result.stop_reason);
+    assert!(result.converged(), "{:?}", result.stop_reason);
     assert_eq!(result.iterations, 1);
     assert!((result.x[1] / 1e-100 - 1.0).abs() < 1e-9, "{:?}", result.x);
 }
@@ -138,7 +135,7 @@ fn a_zero_initial_gradient_nothing_contradicts_certifies(
 ) {
     let result = zero_initial_gradient(a, m, b, x0);
 
-    assert!(result.converged, "{:?}", result.stop_reason);
+    assert!(result.converged(), "{:?}", result.stop_reason);
     assert_eq!(result.iterations, 0);
 }
 
@@ -153,7 +150,7 @@ fn a_zero_initial_gradient_nothing_contradicts_certifies(
 #[test]
 fn test_mid_stream_breakdown_reports_convergence() {
     let result = zero_second_row_solve(&[5.0, 3.0]);
-    assert!(result.converged);
+    assert!(result.converged());
     assert_eq!(result.stop_reason, LsmrStopReason::NormalEquationTolerance);
     // x_0 = 5 fits row 0; row 1 is unmatchable, leaving residual 3.
     assert!((result.x[0] - 5.0).abs() < 1e-10);
@@ -164,7 +161,7 @@ fn test_mid_stream_breakdown_reports_convergence() {
 fn test_mlsmr_zero_rhs_stop_reason() {
     let b = vec![0.0; 4];
     let result = lsmr(&OverdeterminedOp, &b, 1e-12, 100, None).expect("zero-rhs solve");
-    assert!(result.converged);
+    assert!(result.converged());
     assert_eq!(result.iterations, 0);
     assert_eq!(result.stop_reason, LsmrStopReason::ZeroRhs);
     assert_eq!(result.residual_norm, 0.0);
@@ -205,6 +202,7 @@ fn test_mlsmr_near_breakdown_vp_clamps_to_zero() {
         &NearBreakdownPrecond,
         1e-10,
         100,
+        None,
         MlsmrOptions::default(),
     );
     assert!(
@@ -271,6 +269,7 @@ fn test_mlsmr_rejects_bad_preconditioner_shape() {
         &BadPrecond,
         1e-10,
         100,
+        None,
         MlsmrOptions::default(),
     );
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
@@ -302,7 +301,15 @@ fn test_mlsmr_rejects_indefinite_preconditioner() {
 
     let b = vec![3.0, 4.0];
     let op = IdentityOp { n: 2 };
-    let result = mlsmr(&op, &b, &NegIdentity, 1e-10, 100, MlsmrOptions::default());
+    let result = mlsmr(
+        &op,
+        &b,
+        &NegIdentity,
+        1e-10,
+        100,
+        None,
+        MlsmrOptions::default(),
+    );
     assert!(matches!(result, Err(SolveError::InvalidInput { .. })));
 }
 
@@ -357,9 +364,9 @@ fn a_reorthogonalized_breakdown_is_not_an_indefinite_metric(
         local_size: Some(local_size),
         ..Default::default()
     };
-    let r = mlsmr(&a, b, &metric, 1e-10, 50, options).expect("SPD metric");
+    let r = mlsmr(&a, b, &metric, 1e-10, 50, None, options).expect("SPD metric");
 
-    assert!(r.converged, "{:?}", r.stop_reason);
+    assert!(r.converged(), "{:?}", r.stop_reason);
     let zero = vec![0.0; a.cols];
     let ratio = normal_equation_residual(&a, &r.x, b) / normal_equation_residual(&a, &zero, b);
     assert!(ratio <= 1e-12, "{ratio:e}");
@@ -400,6 +407,6 @@ fn an_indefinite_metric_is_refused_after_reorthogonalization(
         local_size,
         ..Default::default()
     };
-    let r = mlsmr(&a, b, &DiagOp(m.to_vec()), 1e-12, 50, options);
+    let r = mlsmr(&a, b, &DiagOp(m.to_vec()), 1e-12, 50, None, options);
     assert!(matches!(r, Err(SolveError::InvalidInput { .. })), "{m:?}");
 }

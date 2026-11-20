@@ -19,18 +19,7 @@ fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
         local_size: window,
         ..Default::default()
     };
-    let warm = mlsmr(
-        &op,
-        &b,
-        &m,
-        tol,
-        200,
-        MlsmrOptions {
-            warm_start: Some(&x0),
-            ..base
-        },
-    )
-    .expect("warm solve");
+    let warm = mlsmr(&op, &b, &m, tol, 200, Some(&x0), base).expect("warm solve");
     assert_eq!(warm.stop_reason, LsmrStopReason::ResidualTolerance);
 
     let mut r = vec![0.0; op.rows];
@@ -38,7 +27,7 @@ fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
     for (ri, bi) in r.iter_mut().zip(&b) {
         *ri = bi - *ri;
     }
-    let naive = mlsmr(&op, &r, &m, tol, 200, base).expect("naive restart");
+    let naive = mlsmr(&op, &r, &m, tol, 200, None, base).expect("naive restart");
     assert!(
         warm.iterations < naive.iterations,
         "warm took {} iters, naive restart {} — the tolerance basis is not `‖b‖`",
@@ -56,12 +45,8 @@ fn test_mlsmr_warm_tolerance_is_relative_to_original_rhs() {
 #[case::nan_x0_zero_rhs(&[0.0, 0.0, 0.0], &[0.0, f64::NAN, 0.0])]
 fn test_mlsmr_rejects_bad_warm_start_for_any_rhs(#[case] b: &[f64], #[case] x0: &[f64]) {
     let op = IdentityOp { n: 3 };
-    let options = MlsmrOptions {
-        warm_start: Some(x0),
-        ..Default::default()
-    };
     assert!(matches!(
-        mlsmr(&op, b, &op, 1e-8, 10, options),
+        mlsmr(&op, b, &op, 1e-8, 10, Some(x0), MlsmrOptions::default()),
         Err(SolveError::InvalidInput { .. })
     ));
 }
@@ -73,12 +58,16 @@ fn test_mlsmr_warm_rejects_overflowing_warm_start_residual() {
     let op = DiagOp(vec![1e200; 3]);
     let m = IdentityOp { n: 3 };
     let x0 = [1e200; 3];
-    let options = MlsmrOptions {
-        warm_start: Some(&x0),
-        ..Default::default()
-    };
     assert!(matches!(
-        mlsmr(&op, &[1.0, 2.0, 3.0], &m, 1e-8, 10, options),
+        mlsmr(
+            &op,
+            &[1.0, 2.0, 3.0],
+            &m,
+            1e-8,
+            10,
+            Some(&x0),
+            MlsmrOptions::default()
+        ),
         Err(SolveError::InvalidInput { .. })
     ));
 }
@@ -89,13 +78,17 @@ fn test_mlsmr_warm_rejects_overflowing_rhs_norm() {
     let op = DiagOp(vec![1.0, 1.1]);
     let m = DiagOp(vec![1e-310; 2]);
     let x0 = [1.2e308, 1.1e308];
-    let options = MlsmrOptions {
-        warm_start: Some(&x0),
-        ..Default::default()
-    };
-    let err = mlsmr(&op, &[1.3e308; 2], &m, 1e-10, 10, options)
-        .err()
-        .expect("an infinite ‖b‖ certified the warm start");
+    let err = mlsmr(
+        &op,
+        &[1.3e308; 2],
+        &m,
+        1e-10,
+        10,
+        Some(&x0),
+        MlsmrOptions::default(),
+    )
+    .err()
+    .expect("an infinite ‖b‖ certified the warm start");
     assert!(
         matches!(&err, SolveError::InvalidInput { message, .. } if message.contains("rhs norm")),
         "{err}"
@@ -106,13 +99,18 @@ fn test_mlsmr_warm_rejects_overflowing_rhs_norm() {
 fn test_mlsmr_zero_rhs_corrects_non_exact_warm_start() {
     let op = IdentityOp { n: 3 };
     let x0 = [1.0, 2.0, 3.0];
-    let options = MlsmrOptions {
-        warm_start: Some(&x0),
-        ..Default::default()
-    };
-    let result = mlsmr(&op, &[0.0, 0.0, 0.0], &op, 1e-10, 10, options).expect("warm correction");
+    let result = mlsmr(
+        &op,
+        &[0.0, 0.0, 0.0],
+        &op,
+        1e-10,
+        10,
+        Some(&x0),
+        MlsmrOptions::default(),
+    )
+    .expect("warm correction");
 
-    assert!(result.converged);
+    assert!(result.converged());
     // `b = 0` leaves `‖b − A x₀‖` as the only scale, so the residual leg is satisfiable.
     assert_eq!(result.stop_reason, LsmrStopReason::ResidualTolerance);
     assert!(vec_norm(&result.x) < 1e-12);
@@ -129,14 +127,11 @@ fn test_mlsmr_exact_warm_start_is_returned_untouched(
     #[case] b: &[f64],
     #[case] x0: &[f64],
 ) {
-    let options = MlsmrOptions {
-        warm_start: Some(x0),
-        ..Default::default()
-    };
     let m = IdentityOp { n: op.ncols() };
-    let result = mlsmr(op, b, &m, 1e-10, 50, options).expect("exact warm start");
+    let result =
+        mlsmr(op, b, &m, 1e-10, 50, Some(x0), MlsmrOptions::default()).expect("exact warm start");
     assert_eq!(result.stop_reason, LsmrStopReason::WarmStartExact);
-    assert!(result.converged);
+    assert!(result.converged());
     assert_eq!(result.x, x0);
     assert_eq!(result.iterations, 0);
 }
@@ -155,8 +150,17 @@ fn test_mlsmr_converged_solve_is_never_escalated() {
         ..Default::default()
     };
     let m = IdentityOp { n: 3 };
-    let result = mlsmr(&IdentityOp { n: 3 }, &[1.0, 2.0, 3.0], &m, 1e-10, 50, opts).expect("solve");
-    assert!(result.converged);
+    let result = mlsmr(
+        &IdentityOp { n: 3 },
+        &[1.0, 2.0, 3.0],
+        &m,
+        1e-10,
+        50,
+        None,
+        opts,
+    )
+    .expect("solve");
+    assert!(result.converged());
     assert_ne!(result.stop_reason, LsmrStopReason::Escalated);
 }
 
@@ -167,26 +171,27 @@ fn test_warm_escalated_stop_is_measured_against_the_original_rhs() {
     let (op, b) = vandermonde_ls();
     let (tol, window) = (1e-12, Some(12));
     let m = jacobi(&op);
-    let cold = mlsmr(&op, &b, &m, tol, 4, MlsmrOptions::default()).expect("cold rung");
+    let cold = mlsmr(&op, &b, &m, tol, 4, None, MlsmrOptions::default()).expect("cold rung");
 
-    let warm = |escalation| {
+    let warm = |maxiter, escalation| {
         mlsmr(
             &op,
             &b,
             &m,
             tol,
-            3,
+            maxiter,
+            Some(&cold.x),
             MlsmrOptions {
-                warm_start: Some(&cold.x),
                 escalation,
                 local_size: window,
             },
         )
         .expect("warm rung")
     };
-    // Same three iterations either way; only the exit taken differs.
-    let escalated = warm(Some(&FixedIterations(3)));
-    let exhausted = warm(None);
+    // Same three iterations either way; only the exit taken differs. A rule firing on the last
+    // permitted iteration is a budget stop, so the escalated run gets one to spare.
+    let escalated = warm(4, Some(&FixedIterations(3)));
+    let exhausted = warm(3, None);
 
     assert_eq!(escalated.stop_reason, LsmrStopReason::Escalated);
     assert_eq!(exhausted.stop_reason, LsmrStopReason::MaxIterations);
@@ -209,45 +214,22 @@ fn test_mlsmr_ladder_warm_starts_and_escalates() {
     let rung = MlsmrOptions {
         escalation: Some(&FixedIterations(3)),
         local_size: window,
-        ..Default::default()
     };
     let final_rung = MlsmrOptions {
         local_size: window,
         ..Default::default()
     };
 
-    let first = mlsmr(&op, &b, &weak, tol, 200, rung).expect("first rung");
+    let first = mlsmr(&op, &b, &weak, tol, 200, None, rung).expect("first rung");
     assert_eq!(first.stop_reason, LsmrStopReason::Escalated);
 
-    let middle = mlsmr(
-        &op,
-        &b,
-        &weak,
-        tol,
-        200,
-        MlsmrOptions {
-            warm_start: Some(&first.x),
-            ..rung
-        },
-    )
-    .expect("middle rung");
+    let middle = mlsmr(&op, &b, &weak, tol, 200, Some(&first.x), rung).expect("middle rung");
     assert_eq!(middle.stop_reason, LsmrStopReason::Escalated);
 
-    let last = mlsmr(
-        &op,
-        &b,
-        &strong,
-        tol,
-        200,
-        MlsmrOptions {
-            warm_start: Some(&middle.x),
-            ..final_rung
-        },
-    )
-    .expect("last rung");
-    assert!(last.converged);
+    let last = mlsmr(&op, &b, &strong, tol, 200, Some(&middle.x), final_rung).expect("last rung");
+    assert!(last.converged());
 
-    let cold = mlsmr(&op, &b, &strong, tol, 200, final_rung).expect("cold solve");
+    let cold = mlsmr(&op, &b, &strong, tol, 200, None, final_rung).expect("cold solve");
     let ladder = normal_equation_residual(&op, &last.x, &b);
     assert!(
         ladder <= 10.0 * normal_equation_residual(&op, &cold.x, &b).max(1e-14),
@@ -334,15 +316,13 @@ fn test_mlsmr_maxiter_residuals_are_rebased_onto_the_original_rhs() {
         &IdentityOp { n: op.cols },
         1e-15,
         3,
-        MlsmrOptions {
-            warm_start: Some(&x0),
-            ..Default::default()
-        },
+        Some(&x0),
+        MlsmrOptions::default(),
     )
     .expect("warm solve");
 
     assert_eq!(result.stop_reason, LsmrStopReason::MaxIterations);
-    assert!(!result.converged);
+    assert!(!result.converged());
 
     let expected = normal_equation_residual(&op, &result.x, &b)
         / normal_equation_residual(&op, &vec![0.0; op.cols], &b);
@@ -372,12 +352,10 @@ fn test_mlsmr_warm_start_audits_at_extreme_magnitude() {
         &IdentityOp { n: 2 },
         1e-15,
         5,
-        MlsmrOptions {
-            warm_start: Some(&x0),
-            ..Default::default()
-        },
+        Some(&x0),
+        MlsmrOptions::default(),
     )
     .expect("the audit must stay representable");
 
-    assert!(result.converged, "{:?}", result.stop_reason);
+    assert!(result.converged(), "{:?}", result.stop_reason);
 }

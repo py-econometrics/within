@@ -19,7 +19,7 @@ mod ladder;
 mod tests;
 
 pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
-pub(crate) use ladder::Ladder;
+pub(crate) use ladder::{Current, Ladder};
 
 /// Concrete additive Schwarz type used in the parent crate.
 #[derive(Clone, Serialize, Deserialize)]

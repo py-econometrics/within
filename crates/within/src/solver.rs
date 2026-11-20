@@ -15,12 +15,12 @@ use crate::design::{CoefficientAddress, CoefficientLayout};
 use crate::design::{Design, Effect};
 use crate::precond::Preconditioner;
 use crate::system::{DesignOperator, Fit, Gramian, OrthogonalDesign, Response};
-use crate::{BuildError, BuildWarning, SolveError, WithinError};
+use crate::{BuildError, BuildWarning, WithinError};
 
 #[cfg(test)]
 mod tests;
 
-use crate::precond::Ladder;
+use crate::precond::{Current, Ladder};
 
 /// Fallible conversion into a [`Design`] for [`Solver::new`]: a categories
 /// matrix (`ArrayView2<u32>`), a list of [`Effect`] terms, a pass-through
@@ -223,11 +223,12 @@ impl std::fmt::Debug for Solver<'_> {
     }
 }
 
-/// Seconds one RHS spent being prepared and in LSMR, across every rung it ran on.
+/// Seconds one RHS spent being prepared, building rungs it was first to stall on, and in LSMR.
 #[derive(Clone, Copy, Default)]
 struct Seconds {
     /// Validation, gather and weighting recur per solve, so they count as setup.
     prepare: f64,
+    build: f64,
     lsmr: f64,
 }
 
@@ -244,135 +245,88 @@ struct RhsSolution {
     seconds: Seconds,
 }
 
-/// One RHS between rungs.
-enum Pass<'s> {
-    /// No rung has run it yet; the first that does prepares it, inside its fan-out.
-    Unstarted(&'s [f64]),
-    /// Handed off with budget left; the next rung resumes from `probe.x`.
-    Stalled {
-        rhs: Response<'s>,
-        probe: LsmrResult,
-        seconds: Seconds,
-    },
-    Done(RhsSolution),
-}
-
 impl<'a> Solver<'a> {
-    /// Runs every pending RHS on one map; each finishes, and is released, here or stalls.
-    fn rung<'s>(
+    /// One RHS up the ladder from `rung`: each stall resumes it from its iterate on the rung above.
+    fn climb<'s>(
         &'s self,
-        passes: Vec<Pass<'s>>,
-        map: Option<&Preconditioner>,
-        stall: Option<&dyn EscalationPolicy>,
+        gramian: Gramian<'_>,
+        mut rung: Current<'s>,
+        y: &[f64],
         lsmr: &LsmrOptions,
-    ) -> Result<Vec<Pass<'s>>, SolveError> {
-        // Collecting into `Result` fails fast on the first per-RHS error, not during the fold.
-        passes
-            .into_par_iter()
-            .map(|pass| {
-                let (rhs, probe, mut seconds) = match pass {
-                    Pass::Done(solution) => return Ok(Pass::Done(solution)),
-                    Pass::Unstarted(y) => {
-                        let started = Instant::now();
-                        let rhs = Response::new(&self.design, y)?;
-                        let prepare = started.elapsed().as_secs_f64();
-                        (rhs, None, Seconds { prepare, lsmr: 0.0 })
-                    }
-                    Pass::Stalled {
-                        rhs,
-                        probe,
-                        seconds,
-                    } => (rhs, Some(probe), seconds),
-                };
-                // The whole ladder shares the caller's budget; a resumed rung gets what the last left.
-                let spent = probe.as_ref().map_or(0, |p| p.iterations);
-                let options = MlsmrOptions {
-                    warm_start: probe.as_ref().map(|p| p.x.as_slice()),
-                    escalation: stall,
-                    local_size: lsmr.local_size,
-                };
-                let identity;
-                let m: &dyn Operator = match map {
-                    Some(m) => m,
-                    None => {
-                        identity = IdentityOp {
-                            n: self.design.unknowns().len(),
-                        };
-                        &identity
-                    }
-                };
-                let started = Instant::now();
-                let maxiter = lsmr.maxiter - spent;
-                let mut result = mlsmr(
-                    &DesignOperator::new(&self.design),
-                    rhs.weighted(),
-                    m,
-                    lsmr.tol,
-                    maxiter,
-                    options,
-                )?;
-                seconds.lsmr += started.elapsed().as_secs_f64();
-                // The next rung starts from `result.x`; the probe it replaces is released here.
-                drop(probe);
-                result.iterations += spent;
-                // A stall on the last permitted iteration leaves the next rung nothing to spend.
-                if result.stop_reason == LsmrStopReason::Escalated
-                    && result.iterations < lsmr.maxiter
-                {
-                    return Ok(Pass::Stalled {
-                        rhs,
-                        probe: result,
-                        seconds,
-                    });
+    ) -> Result<RhsSolution, WithinError> {
+        let started = Instant::now();
+        let rhs = Response::new(&self.design, y)?;
+        let mut seconds = Seconds {
+            prepare: started.elapsed().as_secs_f64(),
+            ..Seconds::default()
+        };
+        // The whole ladder shares the caller's budget; each rung resumes from the last one's x.
+        let mut x: Option<Vec<f64>> = None;
+        let mut spent = 0;
+        loop {
+            let identity;
+            let m: &dyn Operator = match rung.map() {
+                Some(m) => m,
+                None => {
+                    identity = IdentityOp {
+                        n: self.design.unknowns().len(),
+                    };
+                    &identity
                 }
-                let LsmrResult {
-                    x,
-                    true_residual,
-                    converged,
-                    iterations,
-                    normal_eq_residual,
-                    ..
-                } = result;
-                Ok(Pass::Done(RhsSolution {
-                    fit: Fit::new(&self.design, rhs, x, true_residual),
-                    converged,
-                    iterations,
-                    // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
-                    residual: normal_eq_residual,
-                    seconds,
-                }))
-            })
-            .collect()
+            };
+            let options = MlsmrOptions {
+                escalation: rung.stall.map(|s| s as &dyn EscalationPolicy),
+                local_size: lsmr.local_size,
+            };
+            let started = Instant::now();
+            let result = mlsmr(
+                &DesignOperator::new(&self.design),
+                rhs.weighted(),
+                m,
+                lsmr.tol,
+                lsmr.maxiter - spent,
+                x.as_deref(),
+                options,
+            )?;
+            seconds.lsmr += started.elapsed().as_secs_f64();
+            spent += result.iterations;
+            if result.stop_reason == LsmrStopReason::Escalated {
+                let (above, built) = self.ladder.above(gramian, &rung)?;
+                seconds.build += built.as_secs_f64();
+                rung = above;
+                x = Some(result.x);
+                continue;
+            }
+            let converged = result.converged();
+            let LsmrResult {
+                x,
+                true_residual,
+                normal_eq_residual,
+                ..
+            } = result;
+            return Ok(RhsSolution {
+                fit: Fit::new(&self.design, rhs, x, true_residual),
+                converged,
+                iterations: spent,
+                // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
+                residual: normal_eq_residual,
+                seconds,
+            });
+        }
     }
 
-    /// Every RHS in one pass; an unsettled ladder then builds Schwarz once and resumes the stalled.
+    /// Every RHS climbs on its own from the rung the call starts on; each rung is built once.
     fn solve_all(
         &self,
         ys: &[&[f64]],
         lsmr: &LsmrOptions,
-    ) -> Result<(Vec<RhsSolution>, f64), WithinError> {
+    ) -> Result<Vec<RhsSolution>, WithinError> {
         let gramian = Gramian::new(&self.design);
-        let mut current = self.ladder.current(gramian)?;
-        let mut passes = ys.iter().map(|&y| Pass::Unstarted(y)).collect();
-        let mut build_secs = 0.0;
-        loop {
-            let stall = current.stall.map(|s| s as &dyn EscalationPolicy);
-            passes = self.rung(passes, current.map(), stall, lsmr)?;
-            if !passes.iter().any(|p| matches!(p, Pass::Stalled { .. })) {
-                break;
-            }
-            // Built outside the fan-out, so sibling RHS never race for it.
-            build_secs += self.ladder.escalate(gramian, &current)?.as_secs_f64();
-            current = self.ladder.current(gramian)?;
-        }
-        let solutions = passes
-            .into_iter()
-            .map(|pass| match pass {
-                Pass::Done(solution) => solution,
-                _ => unreachable!("a rung without a stall policy finishes every RHS"),
-            })
-            .collect();
-        Ok((solutions, build_secs))
+        // Read once: a column must not start on a rung a sibling built during this call.
+        let start = self.ladder.current(gramian)?;
+        ys.par_iter()
+            .map(|&y| self.climb(gramian, start, y, lsmr))
+            .collect()
     }
 
     /// Construct a solver.
@@ -439,7 +393,7 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
 
         let t_start = Instant::now();
-        let (solutions, build_secs) = self.solve_all(&[y], lsmr)?;
+        let solutions = self.solve_all(&[y], lsmr)?;
         let solution = solutions
             .into_iter()
             .next()
@@ -457,7 +411,7 @@ impl<'a> Solver<'a> {
             residual: solution.residual,
             time_total: t_start.elapsed().as_secs_f64(),
             // A deferred Schwarz build happens between two runs: it is setup, not solve.
-            time_setup: solution.seconds.prepare + build_secs,
+            time_setup: solution.seconds.prepare + solution.seconds.build,
             time_solve: solution.seconds.lsmr,
         })
     }
@@ -473,7 +427,8 @@ impl<'a> Solver<'a> {
         let lsmr = lsmr.into().unwrap_or(&default);
         let n_rhs = ys.len();
 
-        let (solutions, build_secs) = self.solve_all(ys, lsmr)?;
+        let solutions = self.solve_all(ys, lsmr)?;
+        let build_secs = solutions.iter().map(|s| s.seconds.build).sum();
 
         let mut x = Vec::with_capacity(self.design.layout().n_dofs() * n_rhs);
         let mut demeaned = Vec::with_capacity(self.design.n_obs() * n_rhs);

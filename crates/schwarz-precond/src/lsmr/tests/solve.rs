@@ -29,7 +29,7 @@ fn test_lsmr_large_magnitude_rhs_not_silently_zero() {
 
     let all_zero = result.x.iter().all(|&xi| xi == 0.0);
     assert!(
-        !(all_zero && result.converged),
+        !(all_zero && result.converged()),
         "large-magnitude b silently returned the all-zero solution as converged",
     );
 
@@ -45,12 +45,12 @@ fn test_lsmr_large_magnitude_rhs_not_silently_zero() {
 fn test_mlsmr_large_magnitude_rhs_not_silently_zero() {
     let b = vec![1e155, 2e155, 3e155];
     let op = IdentityOp { n: 3 };
-    let result = mlsmr(&op, &b, &op, 1e-10, 100, MlsmrOptions::default())
+    let result = mlsmr(&op, &b, &op, 1e-10, 100, None, MlsmrOptions::default())
         .expect("preconditioned mlsmr solve");
 
     let all_zero = result.x.iter().all(|&xi| xi == 0.0);
     assert!(
-        !(all_zero && result.converged),
+        !(all_zero && result.converged()),
         "large-magnitude b silently returned the all-zero solution as converged",
     );
 
@@ -63,7 +63,7 @@ fn test_mlsmr_large_magnitude_rhs_not_silently_zero() {
 fn test_mlsmr_unpreconditioned() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
     let result = lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("lsmr solve");
-    assert!(result.converged, "MLSMR did not converge");
+    assert!(result.converged(), "MLSMR did not converge");
     let err: f64 = result
         .x
         .iter()
@@ -84,10 +84,11 @@ fn test_mlsmr_preconditioned() {
         &preconditioner,
         1e-10,
         100,
+        None,
         MlsmrOptions::default(),
     )
     .expect("preconditioned mlsmr solve");
-    assert!(result.converged, "Preconditioned MLSMR did not converge");
+    assert!(result.converged(), "Preconditioned MLSMR did not converge");
     let err: f64 = result
         .x
         .iter()
@@ -103,7 +104,7 @@ fn test_mlsmr_inconsistent_system() {
     let b = vec![1.0, 2.0, 3.0, 0.0];
     let result = lsmr(&OverdeterminedOp, &b, 1e-10, 100, None).expect("lsmr solve");
     assert!(
-        result.converged,
+        result.converged(),
         "MLSMR did not converge on inconsistent system"
     );
     let normal_resid = normal_equation_residual(&OverdeterminedOp, &result.x, &b);
@@ -138,7 +139,7 @@ fn test_mlsmr_underdetermined_system() {
 
     let b = vec![1.0, 2.0];
     let result = lsmr(&UnderOp, &b, 1e-12, 100, None).expect("underdetermined solve");
-    assert!(result.converged);
+    assert!(result.converged());
     assert!((result.x[0] - 1.0).abs() < 1e-10);
     assert!((result.x[1] - 2.0).abs() < 1e-10);
     assert!(result.x[2].abs() < 1e-10);
@@ -170,7 +171,7 @@ fn test_mlsmr_rank_deficient_system() {
 
     let b = vec![3.0, 6.0];
     let result = lsmr(&RankDeficientOp, &b, 1e-12, 100, None).expect("rank-deficient solve");
-    assert!(result.converged);
+    assert!(result.converged());
     assert!(((result.x[0] + result.x[1]) - 3.0).abs() < 1e-10);
     assert!(normal_equation_residual(&RankDeficientOp, &result.x, &b) < 1e-10);
 }
@@ -189,11 +190,12 @@ fn a_singular_preconditioner_cannot_certify_the_direction_it_annihilates(#[case]
         &DiagOp(m.to_vec()),
         1e-10,
         100,
+        None,
         MlsmrOptions::default(),
     )
     .expect("singular-preconditioner solve");
 
-    assert!(!result.converged, "{:?}", result.stop_reason);
+    assert!(!result.converged(), "{:?}", result.stop_reason);
     assert_eq!(result.stop_reason, LsmrStopReason::FalseConvergence);
     let residual = normal_equation_residual(&a, &result.x, &b);
     assert!(
@@ -206,7 +208,7 @@ fn a_singular_preconditioner_cannot_certify_the_direction_it_annihilates(#[case]
 fn test_mlsmr_zero_column_and_zero_row() {
     let b = vec![2.0, 3.0];
     let result = lsmr(&ZeroSecondRow, &b, 1e-12, 100, None).expect("degenerate solve");
-    assert!(result.converged);
+    assert!(result.converged());
     assert!((result.x[0] - 2.0).abs() < 1e-10);
     assert!(result.x[1].abs() < 1e-10);
     assert!(normal_equation_residual(&ZeroSecondRow, &result.x, &b) < 1e-10);
@@ -217,7 +219,7 @@ fn test_mlsmr_maxiter_exhaustion() {
     let b = vec![1.0, 2.0, 3.0, 3.0];
     let result = lsmr(&OverdeterminedOp, &b, 1e-15, 1, None).expect("lsmr solve");
     assert!(
-        !result.converged,
+        !result.converged(),
         "should not converge in 1 iteration at 1e-15 tol"
     );
     assert_eq!(result.iterations, 1);
@@ -239,7 +241,7 @@ fn test_mlsmr_local_reorth_zero_is_identity() {
         assert!((a - b).abs() < 1e-15, "determinism: {a} vs {b}");
     }
     assert!((r1.residual_norm - r2.residual_norm).abs() < 1e-15);
-    assert!(r1.converged);
+    assert!(r1.converged());
 }
 
 /// Ill-conditioned overdetermined system where the standard short
@@ -265,12 +267,12 @@ fn test_mlsmr_local_reorth_unpreconditioned() {
     // The windowed solve should reach the tolerance; the unwindowed one
     // typically stalls or overshoots maxiter on this matrix.
     assert!(
-        r10.converged,
+        r10.converged(),
         "windowed LSMR failed to converge (iters = {})",
         r10.iterations
     );
     assert!(
-        !r0.converged || r10.iterations <= r0.iterations,
+        !r0.converged() || r10.iterations <= r0.iterations,
         "windowed solve must not be slower than unwindowed: r0={} r10={}",
         r0.iterations,
         r10.iterations
@@ -304,9 +306,9 @@ fn test_mlsmr_local_reorth_preconditioned() {
         local_size: Some(10),
         ..Default::default()
     };
-    let r10 = mlsmr(&op, &b, &m, tol, maxiter, opts).expect("windowed preconditioned solve");
+    let r10 = mlsmr(&op, &b, &m, tol, maxiter, None, opts).expect("windowed preconditioned solve");
     assert!(
-        r10.converged,
+        r10.converged(),
         "windowed preconditioned LSMR failed to converge (iters = {})",
         r10.iterations
     );
@@ -335,7 +337,7 @@ fn test_mlsmr_local_reorth_window_boundary_sizes(#[case] window_size: usize) {
 
     // 200 iterations lets a ring of one (no real reorthogonalization) converge at cond ≈ 1e10.
     let result = lsmr(&op, &b, 1e-9, 200, Some(window_size)).expect("lsmr boundary-window solve");
-    assert!(result.converged);
+    assert!(result.converged());
     assert!(
         normal_equation_residual(&op, &result.x, &b) < 1e-6,
         "normal-eq residual too large with window {window_size}",
@@ -349,7 +351,7 @@ fn an_overflowing_operator_norm_estimate_does_not_certify_a_stop() {
     let a = DiagOp(vec![1.2e154, 1e154]);
     let result = lsmr(&a, &[1.0, 1.0], 1e-10, 100, None).expect("extreme-scale solve");
 
-    assert!(result.converged);
+    assert!(result.converged());
     // The refused stop sat at 0.254 after one iteration.
     assert!(
         result.residual_norm < 1e-10,
@@ -368,7 +370,7 @@ fn a_response_nearly_orthogonal_to_the_design_certifies() {
     };
     let b = vec![1e-12, 1e-12, 1.0];
     let r = lsmr(&op, &b, 1e-10, 50, None).expect("lsmr solve");
-    assert!(r.converged, "{:?}", r.stop_reason);
+    assert!(r.converged(), "{:?}", r.stop_reason);
 }
 
 /// The plain audit's reference is `‖Aᵀb‖`; a metric one rescales it and refuses an honest stop.
@@ -386,10 +388,11 @@ fn a_rescaling_preconditioner_does_not_deflate_the_plain_audit_reference() {
         &m,
         1e-10,
         50,
+        None,
         MlsmrOptions::default(),
     )
     .expect("rescaled solve");
-    assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
+    assert!(r.converged(), "stop_reason: {:?}", r.stop_reason);
 }
 
 /// An absolute `ε` floor on `ρρ̄` would drop the whole update on a design with `‖A‖ ≈ 1e-9`.
@@ -401,7 +404,7 @@ fn a_small_normed_design_still_gets_its_solution_update() {
         data: vec![1e-9, 0.0],
     };
     let r = lsmr(&op, &[1e-5, 1.0], 1e-10, 1, None).expect("small-normed solve");
-    assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
+    assert!(r.converged(), "stop_reason: {:?}", r.stop_reason);
     assert!((r.x[0] / 1e4 - 1.0).abs() < 1e-9, "{:?}", r.x);
 }
 
@@ -420,7 +423,7 @@ fn the_solution_update_survives_its_unit_rhs_underflowing(
     };
     let b = [2f64.powi(fit_exp), 2f64.powi(miss_exp)];
     let r = lsmr(&op, &b, 1e-10, 10, None).expect("extreme solve");
-    assert!(r.converged, "stop_reason: {:?}", r.stop_reason);
+    assert!(r.converged(), "stop_reason: {:?}", r.stop_reason);
     let want = 2f64.powi(fit_exp - 1023);
     assert!(
         (r.x[0] / want - 1.0).abs() < 1e-12,
@@ -481,7 +484,7 @@ fn a_power_of_two_scaling_reproduces_the_unit_scale_solve(
         (r.stop_reason, r.iterations),
         (unit.stop_reason, unit.iterations)
     );
-    assert!(r.converged);
+    assert!(r.converged());
     assert!((r.residual_norm / t / unit.residual_norm - 1.0).abs() < 1e-10);
     assert!(
         (r.normal_eq_residual / unit.normal_eq_residual - 1.0).abs() < 1e-6,
