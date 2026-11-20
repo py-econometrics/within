@@ -26,6 +26,7 @@ pub(crate) struct Ladder {
 }
 
 /// The rung a solve runs on, and the stall that hands it to the next.
+#[derive(Clone, Copy)]
 pub(crate) struct Current<'l> {
     top: Option<(usize, &'l Preconditioner)>,
     pub(crate) stall: Option<&'l Staleness>,
@@ -124,9 +125,17 @@ impl Ladder {
             .find(|(_, rung)| offers(gramian, *rung))
     }
 
-    /// The top map, with the stall that leaves it armed only while a rung above can still be built.
+    /// The top map, where a solve starts.
     pub(crate) fn current(&self, gramian: Gramian<'_>) -> Result<Current<'_>, BuildError> {
-        let top = self.top();
+        self.on(gramian, self.top())
+    }
+
+    /// `top`'s map, with the stall that leaves it armed only while a rung above can still be built.
+    fn on<'l>(
+        &'l self,
+        gramian: Gramian<'_>,
+        top: Option<(usize, &'l Preconditioner)>,
+    ) -> Result<Current<'l>, BuildError> {
         let at = top.map(|(at, _)| at);
         let stall = match (at, self.next(gramian, at)) {
             (Some(at), Some((next, _))) => {
@@ -141,14 +150,15 @@ impl Ladder {
         Ok(Current { top, stall })
     }
 
-    /// Build the rung above the one `stalled` ran on, once; returns this call's build time.
-    pub(crate) fn escalate(
-        &self,
+    /// The rung above the one `stalled` ran on, built once by whichever solve stalls first, and
+    /// this call's build time. A solve climbs one rung at a time, whatever its siblings built.
+    pub(crate) fn above<'l>(
+        &'l self,
         gramian: Gramian<'_>,
-        stalled: &Current<'_>,
-    ) -> Result<Duration, BuildError> {
+        stalled: &Current<'l>,
+    ) -> Result<(Current<'l>, Duration), BuildError> {
         let Some((next, rung)) = self.next(gramian, stalled.top.map(|(at, _)| at)) else {
-            return Ok(Duration::ZERO);
+            return Ok((self.on(gramian, stalled.top)?, Duration::ZERO));
         };
         let mut spent = Duration::ZERO;
         let built = self.built[next].get_or_try_init(|| {
@@ -157,7 +167,12 @@ impl Ladder {
             spent = started.elapsed();
             Ok::<_, BuildError>(built)
         })?;
-        built.as_ref().map(|_| spent).map_err(Clone::clone)
+        let top = match built {
+            Ok(RungBuild { map: Some(map), .. }) => Some((next, map)),
+            Ok(RungBuild { map: None, .. }) => stalled.top,
+            Err(e) => return Err(e.clone()),
+        };
+        Ok((self.on(gramian, top)?, spent))
     }
 
     /// The map a solve starts on: the highest rung built so far.
