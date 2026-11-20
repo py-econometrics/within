@@ -80,11 +80,11 @@ fn main() {
         .collect();
 
     let precond = SchwarzPreconditioner::new(entries);
-    let result = mlsmr(&a, &b, &precond, 1e-10, 500, MlsmrOptions::default())
+    let result = mlsmr(&a, &b, &precond, 1e-10, 500, None, MlsmrOptions::default())
         .expect("lsmr should converge");
 
     println!("converged={} iters={} res={:.3e}",
-        result.converged, result.iterations, result.residual_norm);
+        result.converged(), result.iterations, result.residual_norm);
 }
 ```
 

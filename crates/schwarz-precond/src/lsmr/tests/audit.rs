@@ -95,7 +95,7 @@ fn scripted_run(
 #[case::inside_the_gap(1e-9)]
 fn a_stop_the_true_residual_confirms_is_certified(#[case] true_residual: f64) {
     let r = scripted_run(&[true_residual], 5, None);
-    assert!(r.converged);
+    assert!(r.converged());
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
     assert_eq!(r.iterations, 1);
     assert_eq!(r.residual_norm, true_residual);
@@ -105,7 +105,7 @@ fn a_stop_the_true_residual_confirms_is_certified(#[case] true_residual: f64) {
 #[test]
 fn a_refuted_stop_restarts_from_its_iterate() {
     let r = scripted_run(&[1.0, 1e-12], 5, None);
-    assert!(r.converged);
+    assert!(r.converged());
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
     assert_eq!(r.iterations, 2);
     assert_eq!(r.residual_norm, 1e-12);
@@ -115,7 +115,7 @@ fn a_refuted_stop_restarts_from_its_iterate() {
 #[test]
 fn restarts_are_capped_before_the_stop_is_refused() {
     let r = scripted_run(&[1.0, 1.0, 1.0], 5, None);
-    assert!(!r.converged);
+    assert!(!r.converged());
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.iterations, 3);
     assert_eq!(r.residual_norm, 1.0);
@@ -130,7 +130,7 @@ fn restarts_are_capped_before_the_stop_is_refused() {
 #[case::non_finite_residual(f64::NAN, 5)]
 fn a_refuted_stop_without_a_restart_is_refused(#[case] true_residual: f64, #[case] maxiter: usize) {
     let r = scripted_run(&[true_residual], maxiter, None);
-    assert!(!r.converged);
+    assert!(!r.converged());
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.iterations, 1);
     // The scripted restart seeds `(1, 1)`: the refuted iterate's `‖Âᵀr‖`, not the claimed 0.
@@ -151,11 +151,16 @@ fn a_refused_stop_reports_its_iterates_normal_equation_residual(#[values(1.0, 4.
         cols: 1,
         data: vec![1.0],
     };
-    let options = MlsmrOptions {
-        warm_start: Some(&[1e20]),
-        ..Default::default()
-    };
-    let r = mlsmr(&op, &[1.0], &DiagOp(vec![m_inv]), 1e-12, 1, options).expect("solve");
+    let r = mlsmr(
+        &op,
+        &[1.0],
+        &DiagOp(vec![m_inv]),
+        1e-12,
+        1,
+        Some(&[1e20]),
+        MlsmrOptions::default(),
+    )
+    .expect("solve");
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.x, vec![0.0]);
     assert_eq!(r.normal_eq_residual, 1.0);
@@ -253,12 +258,13 @@ fn a_deflating_preconditioner_cannot_certify_the_direction_it_hides() {
         &DiagOp(vec![1.0, 1e-20]),
         1e-8,
         20,
+        None,
         MlsmrOptions::default(),
     )
     .expect("deflated solve");
 
     assert!(
-        !result.converged || (result.x[1] - 1.0).abs() <= 1e-8,
+        !result.converged() || (result.x[1] - 1.0).abs() <= 1e-8,
         "a converged solve left the deflated coordinate at {} after {} iterations",
         result.x[1],
         result.iterations,
@@ -276,14 +282,19 @@ fn a_warm_start_near_the_solution_keeps_its_certificate() {
     let rhs = [1.0, 2.0, 3.0, 5.0];
     let solution = lsmr(&op, &rhs, 1e-14, 100, None).expect("cold solve").x;
     let warm_start = [solution[0] + 1e-11, solution[1] - 2e-11];
-    let options = MlsmrOptions {
-        warm_start: Some(&warm_start),
-        ..Default::default()
-    };
 
-    let result = mlsmr(&op, &rhs, &IdentityOp { n: 2 }, 1e-8, 20, options).expect("warm solve");
+    let result = mlsmr(
+        &op,
+        &rhs,
+        &IdentityOp { n: 2 },
+        1e-8,
+        20,
+        Some(&warm_start),
+        MlsmrOptions::default(),
+    )
+    .expect("warm solve");
 
-    assert!(result.converged, "{:?}", result.stop_reason);
+    assert!(result.converged(), "{:?}", result.stop_reason);
 }
 
 /// `‖Aᵀr‖ / (‖A‖‖r‖)` at the ends of the float range, where the obvious spellings certify an
@@ -327,7 +338,7 @@ fn a_restarted_pass_gets_its_own_escalation_handler() {
     let policy = CountingPolicy::default();
     let r = scripted_run(&[1.0, 1e-12], 5, Some(&policy));
 
-    assert!(r.converged);
+    assert!(r.converged());
     assert_eq!(r.iterations, 2);
     assert_eq!(policy.0.load(std::sync::atomic::Ordering::Relaxed), 2);
 }

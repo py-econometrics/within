@@ -162,17 +162,18 @@ fn test_additive_schwarz_reduces_iterations(
         &IdentityOp { n: a.ncols() },
         1e-8,
         200,
+        None,
         MlsmrOptions::default(),
     )
     .expect("unpreconditioned lsmr");
     assert!(
-        unprecond.converged,
+        unprecond.converged(),
         "Unpreconditioned LSMR did not converge"
     );
 
     let options = MlsmrOptions::default();
-    let precond = mlsmr(&a, &rhs, &schwarz, 1e-8, 200, options).expect("preconditioned lsmr");
-    assert!(precond.converged, "Preconditioned LSMR did not converge");
+    let precond = mlsmr(&a, &rhs, &schwarz, 1e-8, 200, None, options).expect("preconditioned lsmr");
+    assert!(precond.converged(), "Preconditioned LSMR did not converge");
 
     assert!(
         precond.iterations <= unprecond.iterations,

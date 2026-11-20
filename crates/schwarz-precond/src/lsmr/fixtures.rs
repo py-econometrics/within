@@ -15,7 +15,15 @@ pub(crate) fn lsmr<O: Operator + ?Sized>(
         local_size,
         ..Default::default()
     };
-    mlsmr(op, b, &IdentityOp { n: op.ncols() }, tol, maxiter, options)
+    mlsmr(
+        op,
+        b,
+        &IdentityOp { n: op.ncols() },
+        tol,
+        maxiter,
+        None,
+        options,
+    )
 }
 
 /// Simple 4×3 overdetermined system.

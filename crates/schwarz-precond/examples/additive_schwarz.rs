@@ -116,21 +116,26 @@ fn main() {
         &IdentityOp { n: a.ncols() },
         1e-10,
         200,
+        None,
         MlsmrOptions::default(),
     )
     .expect("unpreconditioned lsmr");
     println!(
         "Unpreconditioned LSMR : converged={}, iterations={:>3}, residual={:.3e}",
-        result_plain.converged, result_plain.iterations, result_plain.residual_norm,
+        result_plain.converged(),
+        result_plain.iterations,
+        result_plain.residual_norm,
     );
 
     // --- Additive Schwarz preconditioned LSMR ---
     let precond = SchwarzPreconditioner::new(build_entries(n));
     let options = MlsmrOptions::default();
     let result_schwarz =
-        mlsmr(&a, &rhs, &precond, 1e-10, 200, options).expect("preconditioned lsmr");
+        mlsmr(&a, &rhs, &precond, 1e-10, 200, None, options).expect("preconditioned lsmr");
     println!(
         "Additive Schwarz LSMR : converged={}, iterations={:>3}, residual={:.3e}",
-        result_schwarz.converged, result_schwarz.iterations, result_schwarz.residual_norm,
+        result_schwarz.converged(),
+        result_schwarz.iterations,
+        result_schwarz.residual_norm,
     );
 }

@@ -287,7 +287,6 @@ impl<'a> Solver<'a> {
                 // The whole ladder shares the caller's budget; a resumed rung gets what the last left.
                 let spent = probe.as_ref().map_or(0, |p| p.iterations);
                 let options = MlsmrOptions {
-                    warm_start: probe.as_ref().map(|p| p.x.as_slice()),
                     escalation: stall,
                     local_size: lsmr.local_size,
                 };
@@ -309,26 +308,24 @@ impl<'a> Solver<'a> {
                     m,
                     lsmr.tol,
                     maxiter,
+                    probe.as_ref().map(|p| p.x.as_slice()),
                     options,
                 )?;
                 seconds.lsmr += started.elapsed().as_secs_f64();
                 // The next rung starts from `result.x`; the probe it replaces is released here.
                 drop(probe);
                 result.iterations += spent;
-                // A stall on the last permitted iteration leaves the next rung nothing to spend.
-                if result.stop_reason == LsmrStopReason::Escalated
-                    && result.iterations < lsmr.maxiter
-                {
+                if result.stop_reason == LsmrStopReason::Escalated {
                     return Ok(Pass::Stalled {
                         rhs,
                         probe: result,
                         seconds,
                     });
                 }
+                let converged = result.converged();
                 let LsmrResult {
                     x,
                     true_residual,
-                    converged,
                     iterations,
                     normal_eq_residual,
                     ..
