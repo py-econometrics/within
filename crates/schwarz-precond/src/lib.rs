@@ -66,9 +66,9 @@ pub struct ReadmeDoctests;
 pub mod domain;
 /// Typed errors for build and runtime failures.
 pub mod error;
-mod fold;
 mod local_solve;
 mod lsmr;
+pub mod parallel;
 mod prolongation;
 mod schwarz;
 mod threads;

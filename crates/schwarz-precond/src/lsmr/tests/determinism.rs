@@ -3,8 +3,8 @@
 use rstest::rstest;
 
 use super::super::*;
-use crate::fold::assert_pool_independent;
 use crate::lsmr::fixtures::{lsmr, DiagOp};
+use crate::parallel::assert_pool_independent;
 use crate::{Operator, SolveError};
 
 /// `A x` with `y[i] = x[i mod n] + ½ x[(7i + 3) mod n]`: large enough that every reduction splits.

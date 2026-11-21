@@ -69,15 +69,11 @@ fn run_block_elim_nested_rayon_case() {
 
     // Two subdomains: inner parallelism is off in a 1-thread pool and on in a 4-thread pool.
     let apply_in = |threads: usize| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .expect("test rayon pool")
-            .install(|| {
-                let mut z = vec![0.0; n_dofs];
-                schwarz.apply(&rhs, &mut z).expect("apply succeeds");
-                z.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
-            })
+        schwarz_precond::parallel::in_pool(threads, || {
+            let mut z = vec![0.0; n_dofs];
+            schwarz.apply(&rhs, &mut z).expect("apply succeeds");
+            z.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        })
     };
     let reference = apply_in(1);
     assert!(reference.iter().all(|&b| f64::from_bits(b).is_finite()));

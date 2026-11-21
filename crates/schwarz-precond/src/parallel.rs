@@ -3,8 +3,10 @@
 use std::ops::Range;
 
 /// An ordered input that [`fold`] can cut at an index into a prefix and a suffix.
-pub(crate) trait Split: Sized + Send {
+pub trait Split: Sized + Send {
+    /// Number of items.
     fn n_items(&self) -> usize;
+    /// The first `mid` items and the rest.
     fn split_at(self, mid: usize) -> (Self, Self);
 }
 
@@ -49,7 +51,7 @@ impl<A: Split, B: Split> Split for (A, B) {
 }
 
 /// `leaf` over `block_len` pieces of `input`, combined in a tree fixed by the length alone.
-pub(crate) fn fold<P: Split, T: Send>(
+pub fn fold<P: Split, T: Send>(
     input: P,
     block_len: usize,
     leaf: &(impl Fn(P) -> T + Sync),
@@ -78,20 +80,23 @@ pub(crate) fn fold<P: Split, T: Send>(
 /// Subtrees this small run on the calling thread: a `join` per piece costs more than it spreads.
 const SEQUENTIAL_ITEMS: usize = 1 << 16;
 
+/// Runs `f` in a fresh pool of `threads`.
+#[cfg(any(test, feature = "testing"))]
+pub fn in_pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("pool")
+        .install(f)
+}
+
 /// Asserts `f` returns the same value in pools of 1, 2, 3 and 8 threads.
-#[cfg(test)]
-pub(crate) fn assert_pool_independent<R: PartialEq + Send>(f: impl Fn() -> R + Sync) {
-    let in_pool = |threads: usize| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .expect("pool")
-            .install(&f)
-    };
-    let reference = in_pool(1);
+#[cfg(any(test, feature = "testing"))]
+pub fn assert_pool_independent<R: PartialEq + Send>(f: impl Fn() -> R + Sync) {
+    let reference = in_pool(1, &f);
     for threads in [2, 3, 8] {
         // Not `assert_eq!`: a printed solution vector would bury the thread count.
-        assert!(in_pool(threads) == reference, "{threads} threads");
+        assert!(in_pool(threads, &f) == reference, "{threads} threads");
     }
 }
 

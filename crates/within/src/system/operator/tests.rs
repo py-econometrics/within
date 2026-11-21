@@ -293,24 +293,13 @@ mod slope_design_tests {
     fn adjoint_is_pool_independent() {
         let design = level_reduction_design();
         let r: Vec<f64> = (0..design.n_obs()).map(|i| noise(29 * i + 5)).collect();
-        let adjoint_in = |threads: usize| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .expect("test rayon pool")
-                .install(|| {
-                    let mut dtr = vec![0.0; design.unknowns().len()];
-                    DesignOperator::new(&design)
-                        .apply_adjoint(&r, &mut dtr)
-                        .unwrap();
-                    dtr.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
-                })
-        };
-        let reference = adjoint_in(1);
-        for threads in [2, 3, 8] {
-            // Not `assert_eq!`: a printed coefficient vector would bury the thread count.
-            assert!(adjoint_in(threads) == reference, "{threads} threads");
-        }
+        schwarz_precond::parallel::assert_pool_independent(|| {
+            let mut dtr = vec![0.0; design.unknowns().len()];
+            DesignOperator::new(&design)
+                .apply_adjoint(&r, &mut dtr)
+                .unwrap();
+            dtr.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        });
     }
 
     /// ⟨Dx, r⟩ = ⟨x, Dᵀr⟩, weighted, with each adjoint sum on each fused arity.

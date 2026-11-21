@@ -22,6 +22,7 @@ thiserror.workspace = true
 rustc-hash = "2"
 
 [dev-dependencies]
+schwarz-precond = { workspace = true, features = ["serde", "testing"] }
 criterion = { version = "0.7", features = ["html_reports"] }
 rand = "0.10"
 proptest = "1"

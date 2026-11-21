@@ -1674,6 +1674,7 @@ dependencies = [
  "postcard",
  "rayon",
  "rstest",
+ "schwarz-precond",
  "serde",
  "thiserror 2.0.21",
 ]

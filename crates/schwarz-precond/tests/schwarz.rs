@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use rstest::{fixture, rstest};
+use schwarz_precond::parallel::in_pool;
 use schwarz_precond::{
     mlsmr, IdentityOp, LocalSolveError, LocalSolver, MemStack, MlsmrOptions, Operator,
     PartitionWeights, SchwarzPreconditioner, StackReq, SubdomainCore, SubdomainEntry, Threads,
@@ -82,11 +83,7 @@ fn run_nested_rayon_regression_case() {
     let n = 16_384;
     let rhs: Vec<f64> = (0..n).map(|i| ((i % 13) as f64) - 6.0).collect();
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .expect("test rayon pool");
-    pool.install(|| {
+    in_pool(4, || {
         let schwarz = SchwarzPreconditioner::new(make_nested_parallel_entries(n));
 
         for _ in 0..8 {
@@ -348,13 +345,8 @@ fn test_additive_apply_is_the_subdomain_order_sum_at_any_thread_count(
     #[values(1, 2, 3, 8)] threads: usize,
 ) {
     let schwarz = SchwarzPreconditioner::new(deep_overlap_entries);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .expect("test rayon pool");
     let mut z = vec![f64::NAN; DEEP_OVERLAP_DOFS];
-    pool.install(|| schwarz.apply(&wide_range_rhs, &mut z))
-        .expect("apply succeeds");
+    in_pool(threads, || schwarz.apply(&wide_range_rhs, &mut z)).expect("apply succeeds");
     assert!(z
         .iter()
         .map(|v| v.to_bits())

@@ -56,7 +56,7 @@ impl Prolongation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fold::assert_pool_independent;
+    use crate::parallel::assert_pool_independent;
     use rstest::{fixture, rstest};
 
     #[test]
