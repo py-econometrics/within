@@ -4,6 +4,7 @@
 use std::convert::Infallible;
 use std::mem::MaybeUninit;
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use dyn_stack::{MemStack, StackReq};
@@ -147,8 +148,12 @@ impl Workspaces {
         );
         let align = each.iter().map(StackReq::align_bytes).fold(64, usize::max);
         let offsets = std::iter::once(0)
-            .chain(each.iter().scan(0, |end, w| {
-                *end += w.size_bytes().next_multiple_of(align);
+            .chain(each.iter().scan(0usize, |end, w| {
+                *end = w
+                    .size_bytes()
+                    .checked_next_multiple_of(align)
+                    .and_then(|size| end.checked_add(size))
+                    .expect("a workspace overflows");
                 Some(*end)
             }))
             .collect();
@@ -172,12 +177,13 @@ impl Workspaces {
 }
 
 /// `piece(i, part)` for each item `i` of `input`, `part` holding item `i` alone; the pool decides
-/// which run at once. After an error no new piece starts, but running ones finish, and which of
+/// which run at once. Once a piece fails no new piece starts, but running ones finish, and which of
 /// several errors returns is unspecified.
 pub fn try_for_each_piece<P: Split, E: Send>(
     input: P,
     piece: &(impl Fn(usize, P) -> Result<(), E> + Sync),
 ) -> Result<(), E> {
+    let failed = AtomicBool::new(false);
     rayon::iter::split((0, input), |(start, input): (usize, P)| {
         let n = input.n_items();
         if n < 2 {
@@ -188,8 +194,11 @@ pub fn try_for_each_piece<P: Split, E: Send>(
     })
     .try_for_each(|(start, mut rest)| {
         for i in start..start + rest.n_items() {
+            if failed.load(Ordering::Acquire) {
+                break;
+            }
             let (part, tail) = rest.split_at(1);
-            piece(i, part)?;
+            piece(i, part).inspect_err(|_| failed.store(true, Ordering::Release))?;
             rest = tail;
         }
         Ok(())
@@ -278,5 +287,11 @@ mod tests {
             )
             .to_bits()
         });
+    }
+
+    #[test]
+    #[should_panic(expected = "a workspace overflows")]
+    fn workspaces_past_the_address_space_panic() {
+        Workspaces::new([StackReq::new::<u8>(1 << 62); 4]);
     }
 }
