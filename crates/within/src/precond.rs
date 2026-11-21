@@ -35,38 +35,6 @@ impl std::fmt::Debug for FeSchwarz {
     }
 }
 
-impl Operator for FeSchwarz {
-    fn nrows(&self) -> usize {
-        self.inner.nrows()
-    }
-
-    fn ncols(&self) -> usize {
-        self.inner.ncols()
-    }
-
-    fn scratch(&self) -> StackReq {
-        self.inner.scratch()
-    }
-
-    fn apply_with(
-        &self,
-        x: &[f64],
-        y: &mut [f64],
-        stack: &mut MemStack,
-    ) -> Result<(), schwarz_precond::SolveError> {
-        self.inner.apply_with(x, y, stack)
-    }
-
-    fn apply_adjoint_with(
-        &self,
-        x: &[f64],
-        y: &mut [f64],
-        stack: &mut MemStack,
-    ) -> Result<(), schwarz_precond::SolveError> {
-        self.inner.apply_adjoint_with(x, y, stack)
-    }
-}
-
 /// Diagonal/Jacobi preconditioner for the fixed-effects Gramian.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct DiagonalPreconditioner {
@@ -166,7 +134,7 @@ impl Map {
     fn operator(&self) -> &dyn Operator {
         match self {
             Self::Diagonal(p) => p,
-            Self::Schwarz(p) => p,
+            Self::Schwarz(p) => &p.inner,
         }
     }
 }

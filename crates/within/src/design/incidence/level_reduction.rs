@@ -1,6 +1,5 @@
 //! How a term's per-level reduction `E_tᵀ` is cut into fixed parallel pieces, chosen from its rows.
 
-use std::marker::PhantomData;
 use std::ops::Range;
 
 use schwarz_precond::parallel::{fold, for_each_piece, Split};
@@ -129,8 +128,9 @@ impl LevelReduction {
                     }
                 };
                 if parallel {
-                    let groups = Groups(out, PhantomData);
-                    for_each_piece(groups, &|g, Groups(group, _)| fill(g * LEVEL_GROUP, group));
+                    for_each_piece(Groups(out), &|g, Groups(group)| {
+                        fill(g * LEVEL_GROUP, group)
+                    });
                 } else {
                     fill(0, out);
                 }
@@ -165,16 +165,16 @@ impl LevelReduction {
 }
 
 /// Level slots cut into [`LEVEL_GROUP`] levels per piece, the last one shorter.
-struct Groups<S, O>(O, PhantomData<fn() -> S>);
+struct Groups<O>(O);
 
-impl<S, O: LevelSlots<S>> Split for Groups<S, O> {
+impl<O: Split> Split for Groups<O> {
     fn n_items(&self) -> usize {
         self.0.n_items().div_ceil(LEVEL_GROUP)
     }
     fn split_at(self, mid: usize) -> (Self, Self) {
         let cut = (mid * LEVEL_GROUP).min(self.0.n_items());
         let (left, right) = self.0.split_at(cut);
-        (Groups(left, PhantomData), Groups(right, PhantomData))
+        (Groups(left), Groups(right))
     }
 }
 

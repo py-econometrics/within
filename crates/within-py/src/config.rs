@@ -9,7 +9,7 @@
 
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
-use schwarz_precond::{MemBuffer, MemStack, Operator, StackReq};
+use schwarz_precond::{MemBuffer, MemStack, Operator};
 use std::sync::Mutex;
 
 use within::config::{
@@ -408,7 +408,7 @@ impl PyLsmrOptions {
 pub struct PyPreconditioner {
     pub(crate) inner: Preconditioner,
     /// The last apply's stack, for the next; an apply that finds it taken allocates its own.
-    stack: Mutex<Option<(StackReq, MemBuffer)>>,
+    stack: Mutex<Option<MemBuffer>>,
 }
 
 impl From<Preconditioner> for PyPreconditioner {
@@ -445,10 +445,10 @@ impl PyPreconditioner {
                     return self.inner.apply(x_slice, &mut y).map(|()| y);
                 };
                 let req = self.inner.scratch();
-                let (_, buffer) = match &mut *kept {
-                    Some(held) if held.0 == req => held,
-                    slot => slot.insert((req, MemBuffer::new(req))),
-                };
+                let buffer = kept.get_or_insert_with(|| MemBuffer::new(req));
+                if !MemStack::new(buffer).can_hold(req) {
+                    *buffer = MemBuffer::new(req);
+                }
                 self.inner
                     .apply_with(x_slice, &mut y, MemStack::new(buffer))
                     .map(|()| y)

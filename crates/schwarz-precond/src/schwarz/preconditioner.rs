@@ -129,29 +129,6 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         self.slot_starts[self.subdomains.len()]
     }
 
-    /// `z = M⁻¹ r` on `stack`: each subdomain writes only its own outputs and workspace.
-    fn apply_on(&self, r: &[f64], z: &mut [f64], stack: &mut MemStack) -> Result<(), SolveError> {
-        self.check_len("r", r.len())?;
-        self.check_len("z", z.len())?;
-        let (threads, workspaces) = self.local_budget();
-        let (mut outputs, stack) = stack.make_with(self.n_slots(), |_| 0.0);
-        let parts = (
-            Pieces::new(&mut outputs, &self.slot_starts),
-            workspaces.carve(stack),
-        );
-        try_for_each_piece(parts, &|i, (out, workspace)| {
-            let stack = MemStack::new(workspace.into_items());
-            self.subdomains[i]
-                .apply_weighted_local(r, out.into_items(), threads, stack)
-                .map_err(|source| SolveError::LocalSolveFailed {
-                    subdomain: i,
-                    source,
-                })
-        })?;
-        self.prolongation.apply(&outputs, z);
-        Ok(())
-    }
-
     fn check_len(&self, name: &str, len: usize) -> Result<(), SolveError> {
         let n_dofs = self.n_dofs();
         if len == n_dofs {
@@ -218,8 +195,27 @@ impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
         StackReq::new::<f64>(self.n_slots()).and(workspaces.scratch())
     }
 
+    /// `z = M⁻¹ r`: each subdomain writes only its own outputs and workspace.
     fn apply_with(&self, r: &[f64], z: &mut [f64], stack: &mut MemStack) -> Result<(), SolveError> {
-        self.apply_on(r, z, stack)
+        self.check_len("r", r.len())?;
+        self.check_len("z", z.len())?;
+        let (threads, workspaces) = self.local_budget();
+        let (mut outputs, stack) = stack.make_with(self.n_slots(), |_| 0.0);
+        let parts = (
+            Pieces::new(&mut outputs, &self.slot_starts),
+            workspaces.carve(stack),
+        );
+        try_for_each_piece(parts, &|i, (out, workspace)| {
+            let stack = MemStack::new(workspace.into_items());
+            self.subdomains[i]
+                .apply_weighted_local(r, out.into_items(), threads, stack)
+                .map_err(|source| SolveError::LocalSolveFailed {
+                    subdomain: i,
+                    source,
+                })
+        })?;
+        self.prolongation.apply(&outputs, z);
+        Ok(())
     }
 
     fn apply_adjoint_with(
@@ -228,6 +224,6 @@ impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
         z: &mut [f64],
         stack: &mut MemStack,
     ) -> Result<(), SolveError> {
-        self.apply_on(r, z, stack)
+        self.apply_with(r, z, stack)
     }
 }

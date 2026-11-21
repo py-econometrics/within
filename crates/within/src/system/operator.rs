@@ -3,7 +3,7 @@
 use schwarz_precond::parallel::Workspaces;
 use schwarz_precond::{MemStack, Operator, StackReq};
 
-use super::product::{fold_workspaces, gather, scatter};
+use super::product::{gather, scatter};
 use super::OrthogonalDesign;
 
 #[cfg(test)]
@@ -20,7 +20,7 @@ impl<'p> DesignOperator<'p> {
     pub(crate) fn new(design: &'p OrthogonalDesign<'p>) -> Self {
         Self {
             design,
-            folds: fold_workspaces(design),
+            folds: Workspaces::new(design.terms().map(|t| t.fold_scratch())),
         }
     }
 }

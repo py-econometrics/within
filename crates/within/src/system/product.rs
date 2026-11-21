@@ -5,4 +5,4 @@ mod gather;
 mod scatter;
 
 pub(super) use gather::gather;
-pub(super) use scatter::{fold_workspaces, scatter};
+pub(super) use scatter::scatter;

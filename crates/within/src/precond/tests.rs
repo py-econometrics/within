@@ -71,7 +71,7 @@ fn run_block_elim_nested_rayon_case() {
     let apply_in = |threads: usize| {
         schwarz_precond::parallel::in_pool(threads, || {
             let mut z = vec![0.0; n_dofs];
-            schwarz.apply(&rhs, &mut z).expect("apply succeeds");
+            schwarz.inner.apply(&rhs, &mut z).expect("apply succeeds");
             z.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
         })
     };
@@ -134,7 +134,10 @@ fn test_build_additive() {
         .expect("build schwarz with explicit domains");
     let r = vec![1.0; design.unknowns().len()];
     let mut z = vec![0.0; design.unknowns().len()];
-    schwarz.apply(&r, &mut z).expect("schwarz apply succeeds");
+    schwarz
+        .inner
+        .apply(&r, &mut z)
+        .expect("schwarz apply succeeds");
 }
 
 /// Three-entry eliminated stars, so clique sampling is not

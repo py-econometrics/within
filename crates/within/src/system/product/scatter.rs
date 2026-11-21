@@ -8,13 +8,8 @@ use crate::design::LevelSlots;
 use crate::design::{RowKernel, TermBlock};
 use crate::system::OrthogonalDesign;
 
-/// Each term's fold workspace for [`scatter`], in term order.
-pub(in crate::system) fn fold_workspaces(design: &OrthogonalDesign<'_>) -> Workspaces {
-    Workspaces::new(design.terms().map(|t| t.fold_scratch()))
-}
-
 /// `dst = D̃ᵀ (scale ⊙ src)`. The terms' blocks and fold workspaces are disjoint, so the terms run
-/// concurrently. `folds` is [`fold_workspaces`] of `design`, and `stack` holds at least its scratch.
+/// concurrently. `folds` holds each term's fold workspace, in term order, and `stack` its scratch.
 pub(in crate::system) fn scatter(
     design: &OrthogonalDesign<'_>,
     folds: &Workspaces,
