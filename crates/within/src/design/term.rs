@@ -3,6 +3,8 @@
 
 use std::ops::Range;
 
+use schwarz_precond::{MemStack, StackReq};
+
 use super::{Column, LevelSlots, TermIncidence, TermLayout};
 
 /// Term `t`'s block `D_t`: row `i` holds `r(i) = [1?, z_1(i), …, z_v(i)]` in the columns of
@@ -96,15 +98,22 @@ impl<'p> TermBlock<'p> {
         }
     }
 
-    /// Each level's fold of its rows, in the pieces its reduction fixes: see [`LevelReduction::fold`].
-    pub(crate) fn fold<S: Copy + Send + Sync>(
+    /// What [`fold_with`](Self::fold_with) takes from its stack for states `S`.
+    pub(crate) fn fold_scratch<S>(&self) -> StackReq {
+        self.incidence.fold_scratch::<S>(self.layout().n_levels())
+    }
+
+    /// Each level's fold of its rows, in the pieces its reduction fixes, on `stack`, which holds at
+    /// least [`fold_scratch`](Self::fold_scratch): see [`crate::design::LevelReduction::fold_with`].
+    pub(crate) fn fold_with<S: Copy + Send + Sync>(
         &self,
         init: S,
         step: &(impl Fn(&mut S, usize, usize) + Sync),
         merge: &(impl Fn(&mut S, &S) + Sync),
         out: impl LevelSlots<S>,
+        stack: &mut MemStack,
     ) {
-        self.incidence.fold(init, step, merge, out);
+        self.incidence.fold_with(init, step, merge, out, stack);
     }
 
     #[cfg(test)]

@@ -3,6 +3,7 @@
 use std::ops::Range;
 
 use rayon::prelude::*;
+use schwarz_precond::{MemBuffer, MemStack, StackReq};
 
 use super::RowIndex;
 use crate::PAR_THRESHOLD;
@@ -90,15 +91,38 @@ impl LevelReduction {
 }
 
 impl LevelReduction {
-    /// Each level's fold of its rows: `step(state, level, row)` from `init` over pieces this reduction
-    /// fixes, `merge`d left to right in a fixed binary tree; threads only schedule the pieces.
+    /// What [`fold_with`](Self::fold_with) takes from its stack for states `S` over `n_rows` rows.
+    pub(crate) fn scratch<S>(&self, n_rows: usize, n_levels: usize) -> StackReq {
+        match self {
+            Self::ByLevel(_) => StackReq::EMPTY,
+            Self::ByRow => StackReq::new::<S>(by_row_leaves(n_rows, n_levels) * n_levels),
+        }
+    }
+
+    /// [`fold_with`](Self::fold_with) on a stack allocated for this call.
     pub(crate) fn fold<S: Copy + Send + Sync, O: LevelSlots<S>>(
         &self,
         levels: &[u32],
         init: S,
         step: &(impl Fn(&mut S, usize, usize) + Sync),
         merge: &(impl Fn(&mut S, &S) + Sync),
+        out: O,
+    ) {
+        let mut buffer = MemBuffer::new(self.scratch::<S>(levels.len(), out.len()));
+        self.fold_with(levels, init, step, merge, out, MemStack::new(&mut buffer));
+    }
+
+    /// Each level's fold of its rows: `step(state, level, row)` from `init` over pieces this reduction
+    /// fixes, `merge`d left to right in a fixed binary tree; threads only schedule the pieces. `stack`
+    /// holds at least [`scratch`](Self::scratch).
+    pub(crate) fn fold_with<S: Copy + Send + Sync, O: LevelSlots<S>>(
+        &self,
+        levels: &[u32],
+        init: S,
+        step: &(impl Fn(&mut S, usize, usize) + Sync),
+        merge: &(impl Fn(&mut S, &S) + Sync),
         mut out: O,
+        stack: &mut MemStack,
     ) {
         let parallel = levels.len() > PAR_THRESHOLD;
         let n_levels = out.len();
@@ -135,23 +159,24 @@ impl LevelReduction {
                 }
             }
             Self::ByRow => {
-                // Merging costs ∝ L per state word, a leaf ∝ its rows per word: 4·L rows bound merges.
-                let leaf_len = (4 * n_levels).min(levels.len().div_ceil(2)).max(65_536);
-                let scatter = |rows: Range<usize>| {
-                    let mut states = vec![init; n_levels];
+                let leaf_len = by_row_leaf_len(levels.len(), n_levels);
+                let leaves = by_row_leaves(levels.len(), n_levels);
+                let (mut partials, _) = stack.make_with(leaves * n_levels, |_| init);
+                let scatter = |rows: Range<usize>, states: &mut [S]| {
                     for i in rows {
                         let level = levels[i] as usize;
                         step(&mut states[level], level, i);
                     }
-                    states
                 };
-                let merge_all = |left: &mut Vec<S>, right: &Vec<S>| {
-                    for (l, r) in left.iter_mut().zip(right) {
-                        merge(l, r);
-                    }
-                };
-                let states = fixed_tree(0..levels.len(), leaf_len, &scatter, &merge_all);
-                for (level, state) in states.into_iter().enumerate() {
+                row_tree(
+                    0..levels.len(),
+                    &mut partials,
+                    leaf_len,
+                    n_levels,
+                    &scatter,
+                    merge,
+                );
+                for (level, &state) in partials[..n_levels].iter().enumerate() {
                     out.set(level, state);
                 }
             }
@@ -176,6 +201,41 @@ fn fixed_tree<T: Send>(
     );
     merge(&mut left, &right);
     left
+}
+
+/// Rows per leaf of a by-row fold: merging costs ∝ L per state word, a leaf ∝ its rows per word,
+/// so 4·L rows bound the merges.
+fn by_row_leaf_len(n_rows: usize, n_levels: usize) -> usize {
+    (4 * n_levels).min(n_rows.div_ceil(2)).max(65_536)
+}
+
+/// Leaves of [`row_tree`] over `n_rows` rows, at least one.
+fn by_row_leaves(n_rows: usize, n_levels: usize) -> usize {
+    n_rows.div_ceil(by_row_leaf_len(n_rows, n_levels)).max(1)
+}
+
+/// `leaf` over `leaf_len` pieces of `rows`, each into its own `n_levels` states of `partials`,
+/// merged into the first piece's states in the tree [`fixed_tree`] cuts.
+fn row_tree<S: Send + Sync>(
+    rows: Range<usize>,
+    partials: &mut [S],
+    leaf_len: usize,
+    n_levels: usize,
+    leaf: &(impl Fn(Range<usize>, &mut [S]) + Sync),
+    merge: &(impl Fn(&mut S, &S) + Sync),
+) {
+    if rows.len() <= leaf_len {
+        return leaf(rows, &mut partials[..n_levels]);
+    }
+    let mid = rows.start + (rows.len() / 2 / leaf_len).max(1) * leaf_len;
+    let (left, right) = partials.split_at_mut((mid - rows.start) / leaf_len * n_levels);
+    rayon::join(
+        || row_tree(rows.start..mid, left, leaf_len, n_levels, leaf, merge),
+        || row_tree(mid..rows.end, right, leaf_len, n_levels, leaf, merge),
+    );
+    for (l, r) in left[..n_levels].iter_mut().zip(&right[..n_levels]) {
+        merge(l, r);
+    }
 }
 
 /// The rows of each level, ascending: the inverse of the row → level map.

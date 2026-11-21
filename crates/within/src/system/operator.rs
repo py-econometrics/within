@@ -1,9 +1,9 @@
 //! `A = W^{1/2} D̃`: the system matrix LSMR iterates on, over `D̃`'s term blocks.
 
-use schwarz_precond::{MemStack, Operator};
+use schwarz_precond::{MemStack, Operator, StackReq};
 
 use super::OrthogonalDesign;
-use crate::design::product::{gather, scatter};
+use crate::design::product::{gather, scatter, scatter_scratch};
 use crate::design::TermBlock;
 
 #[cfg(test)]
@@ -38,6 +38,11 @@ impl Operator for DesignOperator<'_> {
         self.n_dofs
     }
 
+    /// The adjoint's by-row partial sums; the forward apply takes nothing.
+    fn scratch(&self) -> StackReq {
+        scatter_scratch(&self.blocks)
+    }
+
     fn apply_with(
         &self,
         x: &[f64],
@@ -53,10 +58,10 @@ impl Operator for DesignOperator<'_> {
         &self,
         x: &[f64],
         y: &mut [f64],
-        _: &mut MemStack,
+        stack: &mut MemStack,
     ) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!((x.len(), y.len()), (self.n_obs, self.n_dofs));
-        scatter(&self.blocks, x, y, self.sqrt);
+        scatter(&self.blocks, x, y, self.sqrt, stack);
         Ok(())
     }
 }

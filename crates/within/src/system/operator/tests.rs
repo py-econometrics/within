@@ -213,7 +213,7 @@ mod slope_design_tests {
     /// Over a subset of the terms, scatter is gather's adjoint and leaves the other blocks alone.
     #[test]
     fn term_subset_products_are_adjoint() {
-        use crate::design::product::{gather, scatter};
+        use crate::design::product::{gather, scatter, scatter_scratch};
         let n = 12;
         let f0: Vec<u32> = (0..n).map(|i| (i % 3) as u32).collect();
         let f1: Vec<u32> = (0..n).map(|i| ((i / 2) % 4) as u32).collect();
@@ -236,7 +236,14 @@ mod slope_design_tests {
         let mut y = vec![0.0; design.n_obs()];
         gather(&kept, &x, &mut y, None);
         let mut xt = vec![f64::NAN; n_x];
-        scatter(&kept, &r, &mut xt, None);
+        let mut buffer = schwarz_precond::MemBuffer::new(scatter_scratch(&kept));
+        scatter(
+            &kept,
+            &r,
+            &mut xt,
+            None,
+            schwarz_precond::MemStack::new(&mut buffer),
+        );
 
         assert!(xt[..first.start].iter().all(|v| v.is_nan()));
         let lhs: f64 = y.iter().zip(&r).map(|(a, b)| a * b).sum();

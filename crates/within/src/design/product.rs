@@ -4,4 +4,4 @@ mod gather;
 mod scatter;
 
 pub(crate) use gather::gather;
-pub(crate) use scatter::scatter;
+pub(crate) use scatter::{scatter, scatter_scratch};
