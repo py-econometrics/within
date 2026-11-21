@@ -9,7 +9,7 @@ const MEANS_PER_PASS: usize = 4;
 const GRAMS_PER_PASS: usize = 6;
 
 /// Weighted within-level mean and Gram, two-pass so structural zeros stay exact.
-pub(crate) struct LevelMoments {
+pub(super) struct LevelMoments {
     /// Slope columns per level: the stride of the means and the side of each level's Gram.
     n_slopes: usize,
     /// Each level's `v` weighted slope means, row-major; `None` without an intercept.
@@ -98,17 +98,17 @@ impl DoubleWord {
 
 /// A weighted level mean kept as `hi + lo`, so centring carries no eps·|mean| error.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct LevelMean {
+pub(super) struct LevelMean {
     hi: f64,
     lo: f64,
 }
 
 impl LevelMean {
-    pub(crate) fn value(self) -> f64 {
+    pub(super) fn value(self) -> f64 {
         self.hi + self.lo
     }
 
-    pub(crate) fn centre(self, z: f64) -> f64 {
+    pub(super) fn centre(self, z: f64) -> f64 {
         (z - self.hi) - self.lo
     }
 }
@@ -268,7 +268,7 @@ fn fold_gram<const P: usize>(
 }
 
 impl LevelMoments {
-    pub(crate) fn build(term: TermIncidence<'_>, zs: &[&[f64]], weights: &RowWeights) -> Self {
+    pub(super) fn build(term: TermIncidence<'_>, zs: &[&[f64]], weights: &RowWeights) -> Self {
         let layout = term.layout();
         let rows = WeightedRows {
             term,
@@ -301,14 +301,14 @@ impl LevelMoments {
     }
 
     /// The level's weighted slope means, tracked only with an intercept.
-    pub(crate) fn mean(&self, level: usize) -> Option<&[LevelMean]> {
+    pub(super) fn mean(&self, level: usize) -> Option<&[LevelMean]> {
         self.means
             .as_ref()
             .map(|m| &m[level * self.n_slopes..][..self.n_slopes])
     }
 
     /// The level's Gram unpacked into a row-major `v×v` matrix.
-    pub(crate) fn fill_gram(&self, level: usize, gram: &mut [f64]) {
+    pub(super) fn fill_gram(&self, level: usize, gram: &mut [f64]) {
         let v = self.n_slopes;
         let packed = &self.gram[level * v * (v + 1) / 2..];
         for j in 0..v {

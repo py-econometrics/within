@@ -17,7 +17,7 @@ use level_moments::{LevelMean, LevelMoments};
 const ROW_CHUNK: usize = 1 << 14;
 
 /// `X_t = X̃_t·R_t⁻¹`: the term's slopes `W`-orthogonal within each level, with `R_t`.
-pub(crate) struct OrthogonalSlopes {
+pub(super) struct OrthogonalSlopes {
     /// `X̃_t`; empty for a slope-free term, whose `R_t` is the identity.
     columns: Vec<Vec<f64>>,
     /// Per level `u = factor·z − shift`, a row-major `V×V` block whose rows past the rank are zero.
