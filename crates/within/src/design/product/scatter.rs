@@ -1,7 +1,7 @@
 //! Scatter: observation space → coefficient space, `x_t = D_tᵀ (s ⊙ v)`, summed per term in the
 //! order its [`LevelReduction`] fixes.
 
-use schwarz_precond::parallel::{for_each_piece, Pieces};
+use schwarz_precond::parallel::{for_each_piece, Pieces, Split};
 use schwarz_precond::{MemStack, StackReq};
 
 use crate::design::LevelSlots;
@@ -165,8 +165,8 @@ fn scatter_term<const C: usize>(
 /// A column-major `C × L` block as per-level `[f64; C]` slots.
 struct Columns<'a, const C: usize>([&'a mut [f64]; C]);
 
-impl<const C: usize> LevelSlots<[f64; C]> for Columns<'_, C> {
-    fn len(&self) -> usize {
+impl<const C: usize> Split for Columns<'_, C> {
+    fn n_items(&self) -> usize {
         self.0[0].len()
     }
 
@@ -179,7 +179,9 @@ impl<const C: usize> LevelSlots<[f64; C]> for Columns<'_, C> {
         });
         (Self(left), Self(right))
     }
+}
 
+impl<const C: usize> LevelSlots<[f64; C]> for Columns<'_, C> {
     fn set(&mut self, level: usize, sums: [f64; C]) {
         for (column, s) in self.0.iter_mut().zip(sums) {
             column[level] = s;

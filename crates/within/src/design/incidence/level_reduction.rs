@@ -18,22 +18,13 @@ pub(crate) const LEVEL_GROUP: usize = 1024;
 /// Rows per leaf of one level's fold; above `PAR_THRESHOLD`, so a sequential fold never joins.
 pub(crate) const LEVEL_LEAF: usize = PAR_THRESHOLD.next_power_of_two();
 
-/// Where a fold writes each level's state; splits into disjoint level ranges for parallel tasks.
-pub(crate) trait LevelSlots<S>: Send + Sized {
-    fn len(&self) -> usize;
-    fn split_at(self, mid: usize) -> (Self, Self);
+/// Where a fold writes each level's state, one item per level; splits into disjoint level ranges
+/// for parallel tasks.
+pub(crate) trait LevelSlots<S>: Split {
     fn set(&mut self, level: usize, state: S);
 }
 
 impl<S: Send> LevelSlots<S> for &mut [S] {
-    fn len(&self) -> usize {
-        <[S]>::len(self)
-    }
-
-    fn split_at(self, mid: usize) -> (Self, Self) {
-        self.split_at_mut(mid)
-    }
-
     fn set(&mut self, level: usize, state: S) {
         self[level] = state;
     }
@@ -109,7 +100,7 @@ impl LevelReduction {
         merge: &(impl Fn(&mut S, &S) + Sync),
         out: O,
     ) {
-        let mut buffer = MemBuffer::new(self.scratch::<S>(levels.len(), out.len()));
+        let mut buffer = MemBuffer::new(self.scratch::<S>(levels.len(), out.n_items()));
         self.fold_with(levels, init, step, merge, out, MemStack::new(&mut buffer));
     }
 
@@ -126,7 +117,7 @@ impl LevelReduction {
         stack: &mut MemStack,
     ) {
         let parallel = levels.len() > PAR_THRESHOLD;
-        let n_levels = out.len();
+        let n_levels = out.n_items();
         match self {
             Self::ByLevel(rows) => {
                 let level_fold = |level: usize| {
@@ -142,7 +133,7 @@ impl LevelReduction {
                     fixed_tree(positions, LEVEL_LEAF, &leaf, merge)
                 };
                 let fill = |first: usize, mut slots: O| {
-                    for k in 0..LevelSlots::len(&slots) {
+                    for k in 0..slots.n_items() {
                         slots.set(k, level_fold(first + k));
                     }
                 };
@@ -184,10 +175,10 @@ struct Groups<S, O>(O, PhantomData<fn() -> S>);
 
 impl<S, O: LevelSlots<S>> Split for Groups<S, O> {
     fn n_items(&self) -> usize {
-        self.0.len().div_ceil(LEVEL_GROUP)
+        self.0.n_items().div_ceil(LEVEL_GROUP)
     }
     fn split_at(self, mid: usize) -> (Self, Self) {
-        let cut = (mid * LEVEL_GROUP).min(self.0.len());
+        let cut = (mid * LEVEL_GROUP).min(self.0.n_items());
         let (left, right) = self.0.split_at(cut);
         (Groups(left, PhantomData), Groups(right, PhantomData))
     }
