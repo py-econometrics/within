@@ -377,3 +377,35 @@ fn a_weightless_level_leaves_its_intercept_unidentified(#[values(0, 1)] n_slopes
     assert_eq!(unidentified.first(), Some(&intercept), "{unidentified:?}");
     assert_eq!(unidentified.len(), 1 + n_slopes, "{unidentified:?}");
 }
+
+/// Wide terms fold their means in groups of four and their Gram in chunks of six entries.
+#[rstest]
+fn wide_slope_terms_stay_orthonormal(
+    #[values(4, 5, 7)] n_slopes: usize,
+    #[values(true, false)] weighted: bool,
+) {
+    use rand::rngs::SmallRng;
+    use rand::{RngExt, SeedableRng};
+    let (n_levels, rows) = (30, 40);
+    let n = n_levels * rows;
+    let mut rng = SmallRng::seed_from_u64(7);
+    let levels: Vec<u32> = (0..n).map(|i| (i % n_levels) as u32).collect();
+    let t: Vec<f64> = (0..n).map(|_| rng.random::<f64>() - 0.5).collect();
+    let zs: Vec<Vec<f64>> = (1..=n_slopes)
+        .map(|p| {
+            t.iter()
+                .map(|x| 1e3 * p as f64 + x.powi(p as i32))
+                .collect()
+        })
+        .collect();
+    let weights: Option<Vec<f64>> =
+        weighted.then(|| (0..n).map(|_| 0.2 + rng.random::<f64>()).collect());
+    let slopes: Vec<&[f64]> = zs.iter().map(|z| &z[..]).collect();
+    let effects = vec![Effect::new(&levels, true, slopes).unwrap()];
+    let design = Design::new(effects)
+        .unwrap()
+        .orthogonalize(weights.as_deref())
+        .unwrap();
+    assert!(design.unidentified().next().is_none());
+    assert_level_grams_orthonormal(&design, 0, 1e-12);
+}
