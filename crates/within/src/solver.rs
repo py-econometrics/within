@@ -14,7 +14,7 @@ use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::design::{CoefficientAddress, CoefficientLayout};
 use crate::design::{Design, Effect};
 use crate::precond::Preconditioner;
-use crate::system::{DesignOperator, Fit, Gramian, OrthogonalDesign, Response};
+use crate::system::{DesignOperator, Fit, Gramian, OrthogonalDesign};
 use crate::{BuildError, BuildWarning, WithinError};
 
 #[cfg(test)]
@@ -255,7 +255,7 @@ impl<'a> Solver<'a> {
         lsmr: &LsmrOptions,
     ) -> Result<RhsSolution, WithinError> {
         let started = Instant::now();
-        let rhs = Response::new(&self.design, y)?;
+        let rhs = self.design.response(y)?;
         let mut seconds = Seconds {
             prepare: started.elapsed().as_secs_f64(),
             ..Seconds::default()
@@ -305,7 +305,7 @@ impl<'a> Solver<'a> {
                 ..
             } = result;
             return Ok(RhsSolution {
-                fit: Fit::new(&self.design, rhs, x, true_residual),
+                fit: rhs.fit(x, true_residual),
                 converged,
                 iterations: spent,
                 // Read from the LSMR recurrence at no extra cost; see `SolveResult::residual`.
