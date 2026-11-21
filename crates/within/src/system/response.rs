@@ -3,7 +3,6 @@
 use std::borrow::Cow;
 
 use super::OrthogonalDesign;
-use crate::design::product::gather;
 use crate::SolveError;
 
 /// One response in the internal observation order, with its `W^{1/2}`-weighted image.
@@ -63,7 +62,7 @@ impl Fit {
             }
             measured => {
                 let mut demeaned = measured.unwrap_or_else(|| vec![0.0; rhs.y.len()]);
-                gather(&design.terms().collect::<Vec<_>>(), &x, &mut demeaned, None);
+                super::product::gather(design, &x, &mut demeaned, None);
                 for (d, &yi) in demeaned.iter_mut().zip(rhs.y.iter()) {
                     *d = yi - *d;
                 }

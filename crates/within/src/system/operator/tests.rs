@@ -210,45 +210,6 @@ mod slope_design_tests {
         assert_close(&got_t, &expect_t);
     }
 
-    /// Over a subset of the terms, scatter is gather's adjoint and leaves the other blocks alone.
-    #[test]
-    fn term_subset_products_are_adjoint() {
-        use crate::design::product::{gather, scatter};
-        let n = 12;
-        let f0: Vec<u32> = (0..n).map(|i| (i % 3) as u32).collect();
-        let f1: Vec<u32> = (0..n).map(|i| ((i / 2) % 4) as u32).collect();
-        let z: Vec<f64> = (0..n).map(|i| noise(500 + i)).collect();
-        let effects = vec![
-            Effect::new(&f0, true, []).unwrap(),
-            Effect::new(&f1, true, [&z[..]]).unwrap(),
-        ];
-        let design = Design::new(effects).unwrap().orthogonalize(None).unwrap();
-        let kept: Vec<_> = design.terms().skip(1).collect();
-        let first = kept[0].dofs();
-        assert!(
-            first.start > 0,
-            "the subset must start past the first block"
-        );
-
-        let n_x = design.unknowns().len();
-        let x: Vec<f64> = (0..n_x).map(|j| noise(7_000 + j)).collect();
-        let r: Vec<f64> = (0..design.n_obs()).map(|i| noise(9_000 + i)).collect();
-        let mut y = vec![0.0; design.n_obs()];
-        gather(&kept, &x, &mut y, None);
-        let mut xt = vec![f64::NAN; n_x];
-        scatter(&kept, &r, &mut xt, None);
-
-        assert!(xt[..first.start].iter().all(|v| v.is_nan()));
-        let lhs: f64 = y.iter().zip(&r).map(|(a, b)| a * b).sum();
-        let rhs: f64 = (x[first.start..].iter().zip(&xt[first.start..]))
-            .map(|(a, b)| a * b)
-            .sum();
-        assert!(
-            (lhs - rhs).abs() <= 1e-12 * lhs.abs().max(1.0),
-            "{lhs} vs {rhs}"
-        );
-    }
-
     /// By-level (sorted or indexed) and by-row terms per fused arity; levels over many leaves.
     fn level_reduction_design() -> OrthogonalDesign<'static> {
         let n: usize = 300_000;
@@ -293,24 +254,13 @@ mod slope_design_tests {
     fn adjoint_is_pool_independent() {
         let design = level_reduction_design();
         let r: Vec<f64> = (0..design.n_obs()).map(|i| noise(29 * i + 5)).collect();
-        let adjoint_in = |threads: usize| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .expect("test rayon pool")
-                .install(|| {
-                    let mut dtr = vec![0.0; design.unknowns().len()];
-                    DesignOperator::new(&design)
-                        .apply_adjoint(&r, &mut dtr)
-                        .unwrap();
-                    dtr.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
-                })
-        };
-        let reference = adjoint_in(1);
-        for threads in [2, 3, 8] {
-            // Not `assert_eq!`: a printed coefficient vector would bury the thread count.
-            assert!(adjoint_in(threads) == reference, "{threads} threads");
-        }
+        schwarz_precond::parallel::assert_pool_independent(|| {
+            let mut dtr = vec![0.0; design.unknowns().len()];
+            DesignOperator::new(&design)
+                .apply_adjoint(&r, &mut dtr)
+                .unwrap();
+            dtr.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        });
     }
 
     /// ⟨Dx, r⟩ = ⟨x, Dᵀr⟩, weighted, with each adjoint sum on each fused arity.
@@ -325,7 +275,7 @@ mod slope_design_tests {
         ];
         for (t, by_level) in design.terms().zip(by_level) {
             assert_eq!(
-                matches!(t.reduction(), LevelReduction::ByLevel(_)),
+                matches!(t.incidence().reduction(), LevelReduction::ByLevel(_)),
                 by_level
             );
         }

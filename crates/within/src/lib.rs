@@ -39,6 +39,7 @@ pub use config::{
 pub use design::{Channel, ChannelPair, CoefficientAddress, CoefficientLayout, Design, Effect};
 pub use error::{BuildError, BuildWarning, SolveError, WithinError};
 pub use precond::Preconditioner;
+pub use schwarz_precond::{MemBuffer, MemStack, StackReq};
 pub use solver::{
     solve, solve_batch, BatchSolveResult, IntoDesign, PreconditionerInput, SolveResult, Solver,
 };

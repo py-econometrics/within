@@ -308,11 +308,7 @@ fn orthogonalization_is_bitwise_identical_across_thread_counts() {
             .unwrap()
     };
     let bits = |threads: usize| {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .unwrap();
-        pool.install(|| {
+        schwarz_precond::parallel::in_pool(threads, || {
             let design = prepare();
             let mut x: Vec<f64> = (0..design.unknowns().len())
                 .map(|i| (i as f64).sin())
@@ -324,11 +320,11 @@ fn orthogonalization_is_bitwise_identical_across_thread_counts() {
                 .collect();
             let by_row = design
                 .terms()
-                .filter(|t| matches!(t.reduction(), LevelReduction::ByRow))
+                .filter(|t| matches!(t.incidence().reduction(), LevelReduction::ByRow))
                 .count();
             let largest_by_level = design
                 .terms()
-                .filter(|t| matches!(t.reduction(), LevelReduction::ByLevel(_)))
+                .filter(|t| matches!(t.incidence().reduction(), LevelReduction::ByLevel(_)))
                 .map(|t| {
                     let mut rows = vec![0usize; t.layout().n_levels()];
                     for &l in t.levels() {

@@ -7,7 +7,7 @@ use super::{
 };
 use crate::lsmr::fixtures::{lsmr, DenseOp, DiagOp};
 use crate::lsmr::IdentityOp;
-use crate::{Operator, SolveError};
+use crate::{MemStack, Operator, SolveError};
 
 /// The unpreconditioned stream from `b`, and its first step.
 fn cold_stream<'a, A: Operator>(
@@ -104,11 +104,21 @@ fn an_overflow_after_initialization_is_an_error() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, _x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_with(
+            &self,
+            _x: &[f64],
+            y: &mut [f64],
+            _: &mut MemStack,
+        ) -> Result<(), SolveError> {
             y.fill(f64::MAX);
             Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_adjoint_with(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            _: &mut MemStack,
+        ) -> Result<(), SolveError> {
             y.copy_from_slice(x);
             Ok(())
         }

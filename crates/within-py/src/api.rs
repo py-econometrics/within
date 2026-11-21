@@ -380,7 +380,7 @@ impl PySolver {
     fn preconditioner_py(&self) -> PyResult<Option<PyPreconditioner>> {
         match self.solver.preconditioner() {
             None => Ok(None),
-            Some(p) => Ok(Some(PyPreconditioner { inner: p.clone() })),
+            Some(p) => Ok(Some(PyPreconditioner::from(p.clone()))),
         }
     }
 

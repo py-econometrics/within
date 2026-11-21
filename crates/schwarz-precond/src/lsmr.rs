@@ -10,7 +10,7 @@ mod tests;
 
 use std::borrow::Cow;
 
-use crate::{Operator, SolveError};
+use crate::{MemStack, Operator, SolveError};
 use bidiag::{axpby, BidiagStep, Bidiagonalization, StagedStart};
 use magnitude::Magnitude;
 use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
@@ -235,12 +235,17 @@ impl Operator for IdentityOp {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
         y.copy_from_slice(x);
         Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply_with(x, y, stack)
     }
 }
 

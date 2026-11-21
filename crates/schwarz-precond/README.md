@@ -33,7 +33,7 @@ struct TridiagOp(usize);
 impl Operator for TridiagOp {
     fn nrows(&self) -> usize { self.0 }
     fn ncols(&self) -> usize { self.0 }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
         for i in 0..self.0 {
             y[i] = 3.0 * x[i];
             if i > 0          { y[i] -= x[i - 1]; }
@@ -41,8 +41,8 @@ impl Operator for TridiagOp {
         }
         Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint_with(&self, x: &[f64], y: &mut [f64], stack: &mut MemStack) -> Result<(), SolveError> {
+        self.apply_with(x, y, stack)
     }
 }
 

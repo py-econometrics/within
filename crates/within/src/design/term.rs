@@ -1,9 +1,9 @@
 //! One term's column block `D_t = E_t • X_t` of a design, and the operations every kernel reads
 //! it through.
 
-use std::ops::Range;
+use schwarz_precond::StackReq;
 
-use super::{Column, LevelSlots, TermIncidence, TermLayout};
+use super::{Column, TermIncidence, TermLayout};
 
 /// Term `t`'s block `D_t`: row `i` holds `r(i) = [1?, z_1(i), …, z_v(i)]` in the columns of
 /// level `level(i)`.
@@ -12,8 +12,6 @@ pub(crate) struct TermBlock<'p> {
     incidence: TermIncidence<'p>,
     /// The layout's `n_slopes` columns, in order.
     slopes: &'p [Vec<f64>],
-    /// Its first coefficient in the vector the products read and write.
-    at: usize,
 }
 
 /// A kernel over a block's rows `r(i)`.
@@ -25,17 +23,8 @@ pub(crate) trait RowKernel {
 }
 
 impl<'p> TermBlock<'p> {
-    pub(crate) fn new(incidence: TermIncidence<'p>, slopes: &'p [Vec<f64>], at: usize) -> Self {
-        Self {
-            incidence,
-            slopes,
-            at,
-        }
-    }
-
-    /// The block's coefficients in the vector the products read and write.
-    pub(crate) fn dofs(&self) -> Range<usize> {
-        self.at..self.at + self.layout().n_dofs()
+    pub(crate) fn new(incidence: TermIncidence<'p>, slopes: &'p [Vec<f64>]) -> Self {
+        Self { incidence, slopes }
     }
 
     /// The block's shape: levels and columns.
@@ -96,19 +85,25 @@ impl<'p> TermBlock<'p> {
         }
     }
 
-    /// Each level's fold of its rows, in the pieces its reduction fixes: see [`LevelReduction::fold`].
-    pub(crate) fn fold<S: Copy + Send + Sync>(
-        &self,
-        init: S,
-        step: &(impl Fn(&mut S, usize, usize) + Sync),
-        merge: &(impl Fn(&mut S, &S) + Sync),
-        out: impl LevelSlots<S>,
-    ) {
-        self.incidence.fold(init, step, merge, out);
+    /// What `E_t`'s fold takes from its stack for the rows [`visit_rows`](Self::visit_rows) hands a
+    /// kernel.
+    pub(crate) fn fold_scratch(&self) -> StackReq {
+        struct Width<'a>(&'a mut usize);
+        impl RowKernel for Width<'_> {
+            fn fixed<const C: usize>(self, _: impl Fn(usize) -> [f64; C] + Sync) {
+                *self.0 = C;
+            }
+            fn dynamic(self) {
+                *self.0 = 1;
+            }
+        }
+        let mut width = 0;
+        self.visit_rows(Width(&mut width));
+        self.incidence.fold_scratch::<f64>().array(width)
     }
 
-    #[cfg(test)]
-    pub(crate) fn reduction(&self) -> &'p crate::design::LevelReduction {
-        self.incidence.reduction()
+    /// `E_t`, which folds the block's rows per level.
+    pub(crate) fn incidence(&self) -> TermIncidence<'p> {
+        self.incidence
     }
 }

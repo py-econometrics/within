@@ -3,6 +3,7 @@
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rstest::{fixture, rstest};
+use schwarz_precond::parallel::in_pool;
 use within::{Design, Effect, LsmrOptions, PreconditionerConfig, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -95,14 +96,6 @@ impl Panel {
     }
 }
 
-fn with_threads<T: Send>(threads: usize, run: impl FnOnce() -> T + Send) -> T {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .expect("pool")
-        .install(run)
-}
-
 /// Off and the diagonal run different LSMR drivers; Adaptive builds a weighted Schwarz on a stall.
 #[rstest]
 #[case::off(PreconditionerConfig::Off, false)]
@@ -115,22 +108,22 @@ fn a_solve_returns_the_same_bits_at_any_thread_count(
     #[case] weighted: bool,
 ) {
     let adaptive = matches!(precond, PreconditionerConfig::Adaptive { .. });
-    let solver = with_threads(1, || panel.solver(&precond, weighted));
-    let reference = with_threads(1, || panel.fingerprint(&solver));
+    let solver = in_pool(1, || panel.solver(&precond, weighted));
+    let reference = in_pool(1, || panel.fingerprint(&solver));
     assert_eq!(
         reference.escalated, adaptive,
         "only the weighted ladder reaches its Schwarz build"
     );
     // Not `assert_eq!`: a printed solution vector would bury the thread count.
     for threads in [2, 3, 8] {
-        let fresh = with_threads(threads, || {
+        let fresh = in_pool(threads, || {
             panel.fingerprint(&panel.solver(&precond, weighted))
         });
         assert!(fresh == reference, "{threads} threads");
     }
     // Adaptive's second solve starts from the Schwarz its first one built (#370).
     if !adaptive {
-        let again = with_threads(8, || panel.fingerprint(&solver));
+        let again = in_pool(8, || panel.fingerprint(&solver));
         assert!(again == reference, "built at 1 thread, solved again at 8");
     }
 }

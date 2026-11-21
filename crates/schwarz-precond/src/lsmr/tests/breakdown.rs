@@ -37,12 +37,17 @@ fn test_mlsmr_step1_alpha_zero_early_exit() {
         fn ncols(&self) -> usize {
             1
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = 0.0;
             Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_adjoint_with(
+            &self,
+            u: &[f64],
+            x: &mut [f64],
+            _: &mut MemStack,
+        ) -> Result<(), SolveError> {
             x[0] = u[0];
             Ok(())
         }
@@ -184,13 +189,18 @@ fn test_mlsmr_near_breakdown_vp_clamps_to_zero() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
             y[0] = -x[1] - 1e-10 * x[0];
             y[1] = x[0] - 1e-10 * x[1];
             Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-            self.apply(x, y)
+        fn apply_adjoint_with(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
+            self.apply_with(x, y, stack)
         }
     }
 
@@ -253,12 +263,17 @@ fn test_mlsmr_rejects_bad_preconditioner_shape() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
             y.copy_from_slice(x);
             Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-            self.apply(x, y)
+        fn apply_adjoint_with(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
+            self.apply_with(x, y, stack)
         }
     }
 
@@ -288,14 +303,19 @@ fn test_mlsmr_rejects_indefinite_preconditioner() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
             for (yi, &xi) in y.iter_mut().zip(x) {
                 *yi = -xi;
             }
             Ok(())
         }
-        fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-            self.apply(x, y)
+        fn apply_adjoint_with(
+            &self,
+            x: &[f64],
+            y: &mut [f64],
+            stack: &mut MemStack,
+        ) -> Result<(), SolveError> {
+            self.apply_with(x, y, stack)
         }
     }
 

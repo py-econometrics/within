@@ -2,7 +2,7 @@
 //! `schwarz-precond` API, plus the opaque public [`Preconditioner`] handle.
 
 use rayon::prelude::*;
-use schwarz_precond::{Operator, SchwarzPreconditioner, SubdomainEntry};
+use schwarz_precond::{MemStack, Operator, SchwarzPreconditioner, StackReq, SubdomainEntry};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,24 +35,6 @@ impl std::fmt::Debug for FeSchwarz {
     }
 }
 
-impl Operator for FeSchwarz {
-    fn nrows(&self) -> usize {
-        self.inner.nrows()
-    }
-
-    fn ncols(&self) -> usize {
-        self.inner.ncols()
-    }
-
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.inner.apply(x, y)
-    }
-
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.inner.apply_adjoint(x, y)
-    }
-}
-
 /// Diagonal/Jacobi preconditioner for the fixed-effects Gramian.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct DiagonalPreconditioner {
@@ -68,7 +50,12 @@ impl Operator for DiagonalPreconditioner {
         self.inv_diag.len()
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+    fn apply_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
         let n = self.inv_diag.len();
         if x.len() != n || y.len() != n {
             return Err(schwarz_precond::SolveError::InvalidInput {
@@ -88,8 +75,13 @@ impl Operator for DiagonalPreconditioner {
     }
 
     /// A diagonal operator is symmetric (`M^T = M`), so the adjoint is `apply`.
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
+        self.apply_with(x, y, stack)
     }
 }
 
@@ -142,7 +134,7 @@ impl Map {
     fn operator(&self) -> &dyn Operator {
         match self {
             Self::Diagonal(p) => p,
-            Self::Schwarz(p) => p,
+            Self::Schwarz(p) => &p.inner,
         }
     }
 }
@@ -206,9 +198,25 @@ impl Preconditioner {
         <Self as schwarz_precond::Operator>::ncols(self)
     }
 
-    /// Apply the preconditioner: writes `M^{-1} x` into `y`.
+    /// Apply the preconditioner: writes `M^{-1} x` into `y`, on a stack allocated for this call.
     pub fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        <Self as schwarz_precond::Operator>::apply(self, x, y)
+        <Self as Operator>::apply(self, x, y)
+    }
+
+    /// What [`apply_with`](Self::apply_with) takes from its stack in the current rayon pool.
+    pub fn scratch(&self) -> StackReq {
+        <Self as Operator>::scratch(self)
+    }
+
+    /// [`apply`](Self::apply) on `stack`, which holds at least [`scratch`](Self::scratch), as
+    /// [`MemBuffer::new`](crate::MemBuffer::new) gives; a caller can keep it across applies.
+    pub fn apply_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
+        <Self as Operator>::apply_with(self, x, y, stack)
     }
 
     /// Time spent building this preconditioner.
@@ -226,12 +234,26 @@ impl Operator for Preconditioner {
         self.map.operator().ncols()
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.map.operator().apply(x, y)
+    fn scratch(&self) -> StackReq {
+        self.map.operator().scratch()
     }
 
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
-        self.apply(x, y)
+    fn apply_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
+        self.map.operator().apply_with(x, y, stack)
+    }
+
+    fn apply_adjoint_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
+        self.apply_with(x, y, stack)
     }
 }
 

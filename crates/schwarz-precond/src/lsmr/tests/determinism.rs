@@ -3,8 +3,8 @@
 use rstest::rstest;
 
 use super::super::*;
-use crate::fold::assert_pool_independent;
 use crate::lsmr::fixtures::{lsmr, DiagOp};
+use crate::parallel::assert_pool_independent;
 use crate::{Operator, SolveError};
 
 /// `A x` with `y[i] = x[i mod n] + ½ x[(7i + 3) mod n]`: large enough that every reduction splits.
@@ -26,14 +26,19 @@ impl Operator for Wrapped {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
         for (i, yi) in y.iter_mut().enumerate() {
             let (a, b) = self.cols(i);
             *yi = x[a] + 0.5 * x[b];
         }
         Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_adjoint_with(
+        &self,
+        u: &[f64],
+        x: &mut [f64],
+        _: &mut MemStack,
+    ) -> Result<(), SolveError> {
         x.fill(0.0);
         for (i, &ui) in u.iter().enumerate() {
             let (a, b) = self.cols(i);

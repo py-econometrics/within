@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use rstest::{fixture, rstest};
+use schwarz_precond::parallel::in_pool;
 use schwarz_precond::{
     mlsmr, IdentityOp, LocalSolveError, LocalSolver, MemStack, MlsmrOptions, Operator,
     PartitionWeights, SchwarzPreconditioner, StackReq, SubdomainCore, SubdomainEntry, Threads,
@@ -82,11 +83,7 @@ fn run_nested_rayon_regression_case() {
     let n = 16_384;
     let rhs: Vec<f64> = (0..n).map(|i| ((i % 13) as f64) - 6.0).collect();
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .expect("test rayon pool");
-    pool.install(|| {
+    in_pool(4, || {
         let schwarz = SchwarzPreconditioner::new(make_nested_parallel_entries(n));
 
         for _ in 0..8 {
@@ -348,13 +345,8 @@ fn test_additive_apply_is_the_subdomain_order_sum_at_any_thread_count(
     #[values(1, 2, 3, 8)] threads: usize,
 ) {
     let schwarz = SchwarzPreconditioner::new(deep_overlap_entries);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .expect("test rayon pool");
     let mut z = vec![f64::NAN; DEEP_OVERLAP_DOFS];
-    pool.install(|| schwarz.apply(&wide_range_rhs, &mut z))
-        .expect("apply succeeds");
+    in_pool(threads, || schwarz.apply(&wide_range_rhs, &mut z)).expect("apply succeeds");
     assert!(z
         .iter()
         .map(|v| v.to_bits())
@@ -622,4 +614,88 @@ fn with_n_dofs_pads_uncovered_tail_and_applies_zero() {
     padded.apply(&rhs, &mut z).expect("apply succeeds");
     // Covered DOFs: 1.0 * (4.0 / 2.0) = 2.0; uncovered tail stays exactly 0.
     assert_eq!(z, vec![2.0, 2.0, 0.0, 0.0]);
+}
+
+/// Halves `x` on a workspace that must start on a 256-byte boundary.
+struct WideAligned;
+
+impl LocalSolver for WideAligned {
+    fn n_local(&self) -> usize {
+        1
+    }
+    fn scratch(&self, _: Threads) -> StackReq {
+        StackReq::new_aligned::<u8>(100, 256)
+    }
+    fn solve_local(
+        &self,
+        x: &mut [f64],
+        _: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), LocalSolveError> {
+        let (workspace, _) = stack.make_aligned_uninit::<u8>(100, 256);
+        assert_eq!(workspace.as_ptr() as usize % 256, 0);
+        x[0] *= 0.5;
+        Ok(())
+    }
+}
+
+#[test]
+fn a_local_solve_gets_the_alignment_it_asks_for() {
+    let entries = (0..3)
+        .map(|i| make_entry(SubdomainCore::uniform(vec![i]), WideAligned))
+        .collect();
+    let schwarz = SchwarzPreconditioner::new(entries);
+    let mut z = vec![0.0; 3];
+    schwarz.apply(&[2.0, 4.0, 6.0], &mut z).expect("apply");
+    assert_eq!(z, [1.0, 2.0, 3.0]);
+}
+
+/// Halves `x`; asks for a mebibyte at every thread and a cache line alone, and has `work` to share.
+struct ByBudget {
+    work: usize,
+}
+
+impl LocalSolver for ByBudget {
+    fn n_local(&self) -> usize {
+        1
+    }
+    fn scratch(&self, threads: Threads) -> StackReq {
+        match threads {
+            Threads::All => StackReq::new::<u8>(1 << 20),
+            Threads::Count(_) => StackReq::new::<u8>(64),
+        }
+    }
+    fn solve_local(
+        &self,
+        x: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), LocalSolveError> {
+        let _ = stack.make_uninit::<u8>(self.scratch(threads).size_bytes());
+        x[0] *= 0.5;
+        Ok(())
+    }
+    fn inner_parallelism_work_estimate(&self) -> usize {
+        self.work
+    }
+}
+
+#[rstest]
+#[case::one_subdomain_takes_every_thread(1, 1, true)]
+#[case::subdomains_without_work_take_one(8, 0, false)]
+fn the_stack_holds_each_local_solve_at_the_budget_this_pool_gives_it(
+    #[case] n_subdomains: u32,
+    #[case] work: usize,
+    #[case] every_thread: bool,
+) {
+    let entries = (0..n_subdomains)
+        .map(|i| make_entry(SubdomainCore::uniform(vec![i]), ByBudget { work }))
+        .collect();
+    let schwarz = SchwarzPreconditioner::new(entries);
+    in_pool(4, || {
+        assert_eq!(schwarz.scratch().size_bytes() >= 1 << 20, every_thread);
+        let mut z = vec![0.0; n_subdomains as usize];
+        schwarz.apply(&vec![2.0; z.len()], &mut z).expect("apply");
+        assert!(z.iter().all(|&v| v == 1.0));
+    });
 }

@@ -9,12 +9,13 @@
 
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
+use std::sync::Mutex;
 
 use within::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
     ScalingConfig, ScalingFailure, SchurMode, Staleness,
 };
-use within::{Preconditioner, PreconditionerInput, Schwarz};
+use within::{MemBuffer, MemStack, Preconditioner, PreconditionerInput, Schwarz};
 
 use crate::convert::{value_err, IntoPyErr};
 
@@ -405,6 +406,17 @@ impl PyLsmrOptions {
 #[pyo3(name = "Preconditioner")]
 pub struct PyPreconditioner {
     pub(crate) inner: Preconditioner,
+    /// The last apply's stack, for the next; an apply that finds it taken allocates its own.
+    stack: Mutex<Option<MemBuffer>>,
+}
+
+impl From<Preconditioner> for PyPreconditioner {
+    fn from(inner: Preconditioner) -> Self {
+        Self {
+            inner,
+            stack: Mutex::default(),
+        }
+    }
 }
 
 #[pymethods]
@@ -428,7 +440,17 @@ impl PyPreconditioner {
         let y = py
             .detach(|| {
                 let mut y = vec![0.0; self.inner.nrows()];
-                self.inner.apply(x_slice, &mut y).map(|()| y)
+                let Ok(mut kept) = self.stack.try_lock() else {
+                    return self.inner.apply(x_slice, &mut y).map(|()| y);
+                };
+                let req = self.inner.scratch();
+                let buffer = kept.get_or_insert_with(|| MemBuffer::new(req));
+                if !MemStack::new(buffer).can_hold(req) {
+                    *buffer = MemBuffer::new(req);
+                }
+                self.inner
+                    .apply_with(x_slice, &mut y, MemStack::new(buffer))
+                    .map(|()| y)
             })
             .map_err(IntoPyErr::into_py_err)?;
         Ok(numpy::PyArray1::from_vec(py, y))
@@ -480,7 +502,7 @@ impl PyPreconditioner {
                 e
             ))
         })?;
-        Ok(Self { inner })
+        Ok(Self::from(inner))
     }
 
     /// The configuration whose ladder this map belongs to.
