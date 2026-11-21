@@ -352,3 +352,60 @@ fn orthogonalization_is_bitwise_identical_across_thread_counts() {
         assert!(bits(threads) == one, "{threads} threads differ from one");
     }
 }
+
+/// A level whose rows all weigh zero leaves its intercept unidentified, with or without slopes.
+#[rstest]
+fn a_weightless_level_leaves_its_intercept_unidentified(#[values(0, 1)] n_slopes: usize) {
+    let f = [0u32, 0, 1, 1, 2, 2];
+    let z = [1.0, 2.0, 3.0, 5.0, 4.0, 7.0];
+    let g = [0u32, 1, 0, 1, 0, 1];
+    let weights = [1.0, 2.0, 0.0, 0.0, 3.0, 1.0];
+    let slopes: Vec<&[f64]> = [&z[..]].into_iter().take(n_slopes).collect();
+    let effects = vec![
+        Effect::new(&f, true, slopes).unwrap(),
+        Effect::new(&g, true, []).unwrap(),
+    ];
+    let design = Design::new(effects)
+        .unwrap()
+        .orthogonalize(Some(&weights))
+        .unwrap();
+    let intercept = CoefficientPosition {
+        channel: Channel { term: 0, column: 0 },
+        level: 1,
+    };
+    let unidentified: Vec<_> = design.unidentified().collect();
+    assert_eq!(unidentified.first(), Some(&intercept), "{unidentified:?}");
+    assert_eq!(unidentified.len(), 1 + n_slopes, "{unidentified:?}");
+}
+
+/// Wide terms fold their means in groups of four and their Gram in chunks of six entries.
+#[rstest]
+fn wide_slope_terms_stay_orthonormal(
+    #[values(4, 5, 7)] n_slopes: usize,
+    #[values(true, false)] weighted: bool,
+) {
+    use rand::rngs::SmallRng;
+    use rand::{RngExt, SeedableRng};
+    let (n_levels, rows) = (30, 40);
+    let n = n_levels * rows;
+    let mut rng = SmallRng::seed_from_u64(7);
+    let levels: Vec<u32> = (0..n).map(|i| (i % n_levels) as u32).collect();
+    let t: Vec<f64> = (0..n).map(|_| rng.random::<f64>() - 0.5).collect();
+    let zs: Vec<Vec<f64>> = (1..=n_slopes)
+        .map(|p| {
+            t.iter()
+                .map(|x| 1e3 * p as f64 + x.powi(p as i32))
+                .collect()
+        })
+        .collect();
+    let weights: Option<Vec<f64>> =
+        weighted.then(|| (0..n).map(|_| 0.2 + rng.random::<f64>()).collect());
+    let slopes: Vec<&[f64]> = zs.iter().map(|z| &z[..]).collect();
+    let effects = vec![Effect::new(&levels, true, slopes).unwrap()];
+    let design = Design::new(effects)
+        .unwrap()
+        .orthogonalize(weights.as_deref())
+        .unwrap();
+    assert!(design.unidentified().next().is_none());
+    assert_level_grams_orthonormal(&design, 0, 1e-12);
+}
