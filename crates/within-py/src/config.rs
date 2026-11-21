@@ -9,14 +9,13 @@
 
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
-use schwarz_precond::{MemBuffer, MemStack, Operator};
 use std::sync::Mutex;
 
 use within::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
     ScalingConfig, ScalingFailure, SchurMode, Staleness,
 };
-use within::{Preconditioner, PreconditionerInput, Schwarz};
+use within::{MemBuffer, MemStack, Preconditioner, PreconditionerInput, Schwarz};
 
 use crate::convert::{value_err, IntoPyErr};
 

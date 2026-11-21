@@ -198,9 +198,25 @@ impl Preconditioner {
         <Self as schwarz_precond::Operator>::ncols(self)
     }
 
-    /// Apply the preconditioner: writes `M^{-1} x` into `y`.
+    /// Apply the preconditioner: writes `M^{-1} x` into `y`, on a stack allocated for this call.
     pub fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
         <Self as Operator>::apply(self, x, y)
+    }
+
+    /// What [`apply_with`](Self::apply_with) takes from its stack in the current rayon pool.
+    pub fn scratch(&self) -> StackReq {
+        <Self as Operator>::scratch(self)
+    }
+
+    /// [`apply`](Self::apply) on `stack`, which holds at least [`scratch`](Self::scratch), as
+    /// [`MemBuffer::new`](crate::MemBuffer::new) gives; a caller can keep it across applies.
+    pub fn apply_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
+        <Self as Operator>::apply_with(self, x, y, stack)
     }
 
     /// Time spent building this preconditioner.

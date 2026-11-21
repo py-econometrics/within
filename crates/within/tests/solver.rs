@@ -1,8 +1,9 @@
 use ndarray::array;
 use rstest::rstest;
 use within::{
-    solve, ApproxCholConfig, ApproxSchurConfig, Effect, LocalSolverConfig, LsmrOptions,
-    Preconditioner, PreconditionerConfig, ScalingConfig, ScalingFailure, SchurMode, Solver,
+    solve, ApproxCholConfig, ApproxSchurConfig, Effect, LocalSolverConfig, LsmrOptions, MemBuffer,
+    MemStack, Preconditioner, PreconditionerConfig, ScalingConfig, ScalingFailure, SchurMode,
+    Solver,
 };
 
 #[path = "common/orchestrate_helpers.rs"]
@@ -48,6 +49,26 @@ fn test_solver_matches_oneshot(
     assert_eq!(result.x.len(), oneshot.x.len());
     for (a, b) in result.x.iter().zip(oneshot.x.iter()) {
         assert!((a - b).abs() < 1e-12, "x mismatch: {} vs {}", a, b);
+    }
+}
+
+/// A caller's buffer, kept across applies, gives the bits of an apply on its own stack.
+#[rstest]
+fn a_kept_buffer_applies_as_a_fresh_stack(
+    #[values(PreconditionerConfig::Diagonal, common::additive())] precond: PreconditionerConfig,
+) {
+    let (categories, _) = categories_and_y();
+    let solver = Solver::new(categories.view(), None, &precond).expect("solver build");
+    let map = solver.preconditioner().expect("a map");
+    let x: Vec<f64> = (0..map.ncols()).map(|i| i as f64 - 1.5).collect();
+    let mut fresh = vec![0.0; map.nrows()];
+    map.apply(&x, &mut fresh).expect("apply");
+    let mut buffer = MemBuffer::new(map.scratch());
+    for _ in 0..2 {
+        let mut kept = vec![0.0; map.nrows()];
+        map.apply_with(&x, &mut kept, MemStack::new(&mut buffer))
+            .expect("apply_with");
+        assert_eq!(kept, fresh);
     }
 }
 

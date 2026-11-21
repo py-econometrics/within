@@ -2262,7 +2262,6 @@ dependencies = [
  "numpy",
  "postcard",
  "pyo3",
- "schwarz-precond",
  "within",
 ]
 
