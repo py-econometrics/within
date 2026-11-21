@@ -145,4 +145,20 @@ pub enum WithinError {
     /// Solve-time failure.
     #[error(transparent)]
     Solve(#[from] SolveError),
+    /// Response vector does not match the number of observations.
+    #[error("response has length {got}, expected {expected}")]
+    ResponseLengthMismatch {
+        /// Expected number of observations.
+        expected: usize,
+        /// Actual response length.
+        got: usize,
+    },
+    /// A non-finite response value.
+    #[error("response at index {index} must be finite, got {value}")]
+    InvalidResponse {
+        /// Index of the offending value.
+        index: usize,
+        /// The offending value.
+        value: f64,
+    },
 }
