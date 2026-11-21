@@ -54,7 +54,9 @@ pub trait Operator: Send + Sync {
     fn nrows(&self) -> usize;
     /// Number of columns in the operator.
     fn ncols(&self) -> usize;
-    /// What one apply, of either side, takes from its stack; nothing unless stated.
+    /// What one apply, of either side, takes from its stack; nothing unless stated. An operator
+    /// that applies another on its stack must include the other's: the default leaves it out, and
+    /// the inner apply then panics on a stack too small.
     fn scratch(&self) -> StackReq {
         StackReq::EMPTY
     }
