@@ -1,37 +1,90 @@
-//! Channel-pair subdomain construction.
+//! The additive Schwarz rung over channel-pair subdomains.
 //!
 //! Each cross-factor channel pair hands approx-chol its Gram factor `V`, one column per
 //! observation, and its block-diagonal approximate inverse becomes one Schwarz subdomain.
 //! Overlap is handled by partition-of-unity weights — see [`schwarz_precond::domain`] for
 //! the math.
-//!
-//! Entry point: [`build_local_domains`].
 
-use approx_chol::ScalingOutcome;
-use schwarz_precond::{PartitionWeights, SubdomainCore};
+use approx_chol::{ApproxInverse, ScalingOutcome};
+use rayon::prelude::*;
+use schwarz_precond::{
+    LocalSolveError, LocalSolver, MemStack, Operator, PartitionWeights, SchwarzPreconditioner,
+    StackReq, SubdomainCore, SubdomainEntry, Threads,
+};
+use serde::{Deserialize, Serialize};
 
 use crate::config::{LocalSolverConfig, ScalingFailure};
 use crate::design::Column;
 use crate::design::{Channel, ChannelPair};
-use crate::precond::block_solver::BlockSolver;
+use crate::system::Gramian;
 use crate::{BuildError, BuildWarning};
 
-use super::Gramian;
+/// The rung's map: additive Schwarz over the channel-pair subdomains.
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct FeSchwarz {
+    inner: SchwarzPreconditioner<BlockSolver>,
+}
+
+impl std::fmt::Debug for FeSchwarz {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FeSchwarz")
+            .field("n_subdomains", &self.inner.subdomains().len())
+            .finish()
+    }
+}
+
+impl FeSchwarz {
+    pub(super) fn operator(&self) -> &dyn Operator {
+        &self.inner
+    }
+}
+
+/// The Schwarz map over every cross-term channel pair; `None` without a pair to act on.
+pub(super) fn build(
+    gramian: Gramian<'_>,
+    config: &LocalSolverConfig,
+) -> Result<(Option<FeSchwarz>, Vec<BuildWarning>), BuildError> {
+    let (domains, warnings) = build_local_domains(gramian, config)?;
+    if domains.is_empty() {
+        return Ok((None, warnings));
+    }
+    Ok((
+        Some(build_additive(domains, gramian.unknowns().len())?),
+        warnings,
+    ))
+}
+
+/// `n_dofs` may exceed the span of subdomain indices; an uncovered column resolves to `0`.
+pub(super) fn build_additive(
+    domains: Vec<LocalDomain>,
+    n_dofs: usize,
+) -> Result<FeSchwarz, BuildError> {
+    let entries = domains
+        .into_par_iter()
+        .map(build_entry)
+        .collect::<Result<Vec<_>, BuildError>>()?;
+    Ok(FeSchwarz {
+        inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs),
+    })
+}
+
+fn build_entry(domain: LocalDomain) -> Result<SubdomainEntry<BlockSolver>, BuildError> {
+    let LocalDomain { core, solver } = domain;
+    SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
+}
 
 /// A factor-pair Schwarz domain paired with its factored local operator.
 #[derive(Clone)]
-pub(crate) struct LocalDomain {
-    pub(crate) core: SubdomainCore,
-    pub(crate) solver: BlockSolver,
+pub(super) struct LocalDomain {
+    core: SubdomainCore,
+    solver: BlockSolver,
 }
 
 /// Same-factor channel pairs are exactly orthogonal after orthogonalization, so never enumerated.
-pub(crate) fn build_local_domains(
+pub(super) fn build_local_domains(
     gramian: Gramian<'_>,
     config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
-    use rayon::prelude::*;
-
     let layout = gramian.layout();
 
     config.validate()?;
@@ -115,14 +168,13 @@ fn factor_pair(
     // The factor's components are disjoint blocks, so one subdomain per pair solves each alone.
     let domain = LocalDomain {
         core: SubdomainCore::uniform((0..inverse.n()).map(global).collect()),
-        solver: BlockSolver::new(inverse),
+        solver: BlockSolver { inverse },
     };
     Ok((Some(domain), warnings))
 }
 
 /// Two-sided Schwarz needs `Σ Rᵢᵀ D̃ᵢ² Rᵢ = I`, so a DOF in `c` subdomains gets `1/√c`.
 fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
-    use rayon::prelude::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     // Atomic increments commute, so the parallel accumulation matches the serial scan.
@@ -159,6 +211,50 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
         }
     });
 }
+
+/// One pair's factor; the subdomain's local order is the factored matrix's numbering.
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct BlockSolver {
+    inverse: ApproxInverse,
+}
+
+fn budget(threads: Threads) -> approx_chol::Threads {
+    match threads {
+        Threads::All => approx_chol::Threads::All,
+        Threads::Count(n) => approx_chol::Threads::Count(n),
+    }
+}
+
+impl LocalSolver for BlockSolver {
+    fn n_local(&self) -> usize {
+        self.inverse.n()
+    }
+
+    fn scratch(&self, threads: Threads) -> StackReq {
+        self.inverse.scratch(1, budget(threads))
+    }
+
+    fn solve_local(
+        &self,
+        x: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), LocalSolveError> {
+        self.inverse
+            .apply_with(x, budget(threads), stack)
+            .map_err(|e| LocalSolveError::BackendFailed {
+                context: "BlockSolver::solve_local",
+                message: e.to_string(),
+            })
+    }
+
+    fn inner_parallelism_work_estimate(&self) -> usize {
+        self.inverse.n_steps()
+    }
+}
+
+#[cfg(test)]
+mod build_tests;
 
 #[cfg(test)]
 mod tests {
