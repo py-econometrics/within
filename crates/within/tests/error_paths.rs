@@ -2,7 +2,6 @@ use std::error::Error;
 
 use ndarray::Array2;
 use rstest::rstest;
-use schwarz_precond::SolveError;
 use within::{
     solve, solve_batch, BuildError, Design, Effect, LocalSolverConfig, LsmrOptions,
     PreconditionerConfig, Solver, Staleness, WithinError,
@@ -105,38 +104,23 @@ fn test_non_finite_response_rejected() {
 
     let y = [1.0, f64::NAN, 3.0];
     match solve(cats.view(), &y, None, &params, &precond).unwrap_err() {
-        WithinError::Solve(SolveError::InvalidInput { message, .. }) => {
-            assert!(
-                message.contains("index 1"),
-                "message names the index: {message}"
-            );
-        }
-        other => panic!("Expected Solve(InvalidInput) via solve(), got: {other:?}"),
+        WithinError::InvalidResponse { index, .. } => assert_eq!(index, 1),
+        other => panic!("Expected InvalidResponse via solve(), got: {other:?}"),
     }
 
     // The persistent Solver API funnels through the same guard, so it cannot be bypassed.
     let solver = Solver::new(cats.view(), None, &precond).expect("solver");
     match solver.solve(&y, &params).unwrap_err() {
-        WithinError::Solve(SolveError::InvalidInput { message, .. }) => {
-            assert!(
-                message.contains("index 1"),
-                "message names the index: {message}"
-            );
-        }
-        other => panic!("Expected Solve(InvalidInput) via Solver::solve(), got: {other:?}"),
+        WithinError::InvalidResponse { index, .. } => assert_eq!(index, 1),
+        other => panic!("Expected InvalidResponse via Solver::solve(), got: {other:?}"),
     }
 
     // solve_batch funnels every column through Solver::solve; the bad value is in the 2nd RHS.
     let good = [1.0, 2.0, 3.0];
     let bad = [1.0, 2.0, f64::INFINITY];
     match solve_batch(cats.view(), &[&good[..], &bad[..]], None, &params, &precond).unwrap_err() {
-        WithinError::Solve(SolveError::InvalidInput { message, .. }) => {
-            assert!(
-                message.contains("index 2"),
-                "message names the index: {message}"
-            );
-        }
-        other => panic!("Expected Solve(InvalidInput) via solve_batch(), got: {other:?}"),
+        WithinError::InvalidResponse { index, .. } => assert_eq!(index, 2),
+        other => panic!("Expected InvalidResponse via solve_batch(), got: {other:?}"),
     }
 }
 
@@ -168,6 +152,18 @@ fn test_solver_accepts_slope_bearing_design_alongside_other_terms() {
     // Cross-factor routing (#61): slope terms alongside other terms build.
     let design = Design::new(effects).expect("slope design builds");
     Solver::new(design, None, None).expect("signed routing builds");
+}
+
+#[test]
+fn test_response_length_mismatch_rejected() {
+    let cats = Array2::from_shape_vec((3, 1), vec![0u32, 1, 2]).expect("cats");
+    let solver = Solver::new(cats.view(), None, None).expect("solver");
+    match solver.solve(&[1.0, 2.0], None).unwrap_err() {
+        WithinError::ResponseLengthMismatch { expected, got } => {
+            assert_eq!((expected, got), (3, 2))
+        }
+        other => panic!("Expected ResponseLengthMismatch, got: {other:?}"),
+    }
 }
 
 // The transparent source() forward.

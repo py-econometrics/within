@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use super::OrthogonalDesign;
-use crate::SolveError;
+use crate::WithinError;
 
 /// One response in the internal observation order, with its `W^{1/2}`-weighted image.
 pub(crate) struct Response<'s> {
@@ -13,23 +13,16 @@ pub(crate) struct Response<'s> {
 }
 
 impl<'s> Response<'s> {
-    pub(crate) fn new(design: &OrthogonalDesign<'_>, y: &'s [f64]) -> Result<Self, SolveError> {
+    pub(crate) fn new(design: &OrthogonalDesign<'_>, y: &'s [f64]) -> Result<Self, WithinError> {
         // `W^{1/2} y` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
         if y.len() != design.n_obs() {
-            return Err(SolveError::InvalidInput {
-                context: "Solver::solve",
-                message: format!(
-                    "response vector length ({}) does not match number of observations ({})",
-                    y.len(),
-                    design.n_obs()
-                ),
+            return Err(WithinError::ResponseLengthMismatch {
+                expected: design.n_obs(),
+                got: y.len(),
             });
         }
         if let Some((index, &value)) = y.iter().enumerate().find(|&(_, &v)| !v.is_finite()) {
-            return Err(SolveError::InvalidInput {
-                context: "Solver::solve",
-                message: format!("response at index {index} must be finite, got {value}"),
-            });
+            return Err(WithinError::InvalidResponse { index, value });
         }
         let y = design.incidence.permute_obs_in(y);
         let weighted = design.weights.scaled(&y);
