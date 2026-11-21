@@ -3,7 +3,7 @@
 use std::marker::PhantomData;
 use std::ops::Range;
 
-use schwarz_precond::parallel::{for_each_piece, Split};
+use schwarz_precond::parallel::{fold, for_each_piece, Split};
 use schwarz_precond::{MemBuffer, MemStack, StackReq};
 
 use super::RowIndex;
@@ -126,11 +126,15 @@ impl LevelReduction {
                         rows.for_each_row(positions, |i| step(&mut state, level, i));
                         state
                     };
-                    let positions = rows.positions(level);
-                    if positions.len() <= LEVEL_LEAF {
-                        return leaf(positions);
-                    }
-                    fixed_tree(positions, LEVEL_LEAF, &leaf, merge)
+                    fold(
+                        rows.positions(level),
+                        LEVEL_LEAF,
+                        &leaf,
+                        &|mut left, right| {
+                            merge(&mut left, &right);
+                            left
+                        },
+                    )
                 };
                 let fill = |first: usize, mut slots: O| {
                     for k in 0..slots.n_items() {
@@ -148,21 +152,24 @@ impl LevelReduction {
                 let leaf_len = by_row_leaf_len(levels.len(), n_levels);
                 let leaves = by_row_leaves(levels.len(), n_levels);
                 let (mut partials, _) = stack.make_with(leaves * n_levels, |_| init);
-                let scatter = |rows: Range<usize>, states: &mut [S]| {
-                    for i in rows {
-                        let level = levels[i] as usize;
-                        step(&mut states[level], level, i);
-                    }
-                };
-                row_tree(
-                    0..levels.len(),
-                    &mut partials,
+                let all = RowLeaves {
+                    rows: 0..levels.len(),
+                    partials: &mut partials,
                     leaf_len,
                     n_levels,
-                    &scatter,
-                    merge,
+                };
+                let states = fold(
+                    all,
+                    leaf_len,
+                    &|leaf| leaf.scatter(levels, step),
+                    &|left, right| {
+                        for (l, r) in left.iter_mut().zip(&*right) {
+                            merge(l, r);
+                        }
+                        left
+                    },
                 );
-                for (level, &state) in partials[..n_levels].iter().enumerate() {
+                for (level, &state) in states.iter().enumerate() {
                     out.set(level, state);
                 }
             }
@@ -184,57 +191,57 @@ impl<S, O: LevelSlots<S>> Split for Groups<S, O> {
     }
 }
 
-/// `leaf` over `leaf_len` pieces of `items`, merged in a binary tree fixed by both lengths alone.
-fn fixed_tree<T: Send>(
-    items: Range<usize>,
-    leaf_len: usize,
-    leaf: &(impl Fn(Range<usize>) -> T + Sync),
-    merge: &(impl Fn(&mut T, &T) + Sync),
-) -> T {
-    if items.len() <= leaf_len {
-        return leaf(items);
-    }
-    let mid = items.start + (items.len() / 2 / leaf_len).max(1) * leaf_len;
-    let (mut left, right) = rayon::join(
-        || fixed_tree(items.start..mid, leaf_len, leaf, merge),
-        || fixed_tree(mid..items.end, leaf_len, leaf, merge),
-    );
-    merge(&mut left, &right);
-    left
-}
-
 /// Rows per leaf of a by-row fold: merging costs ∝ L per state word, a leaf ∝ its rows per word,
 /// so 4·L rows bound the merges.
 fn by_row_leaf_len(n_rows: usize, n_levels: usize) -> usize {
     (4 * n_levels).min(n_rows.div_ceil(2)).max(65_536)
 }
 
-/// Leaves of [`row_tree`] over `n_rows` rows, at least one.
+/// Leaves of a by-row fold over `n_rows` rows, at least one.
 fn by_row_leaves(n_rows: usize, n_levels: usize) -> usize {
     n_rows.div_ceil(by_row_leaf_len(n_rows, n_levels)).max(1)
 }
 
-/// `leaf` over `leaf_len` pieces of `rows`, each into its own `n_levels` states of `partials`,
-/// merged into the first piece's states in the tree [`fixed_tree`] cuts.
-fn row_tree<S: Send + Sync>(
+/// Rows in leaves of `leaf_len`, each leaf with its own `n_levels` states of `partials`.
+struct RowLeaves<'a, S> {
     rows: Range<usize>,
-    partials: &mut [S],
+    partials: &'a mut [S],
     leaf_len: usize,
     n_levels: usize,
-    leaf: &(impl Fn(Range<usize>, &mut [S]) + Sync),
-    merge: &(impl Fn(&mut S, &S) + Sync),
-) {
-    if rows.len() <= leaf_len {
-        return leaf(rows, &mut partials[..n_levels]);
+}
+
+impl<'a, S> RowLeaves<'a, S> {
+    /// `step` over every row into this leaf's states, which it returns.
+    fn scatter(self, levels: &[u32], step: &impl Fn(&mut S, usize, usize)) -> &'a mut [S] {
+        let states = &mut self.partials[..self.n_levels];
+        for i in self.rows {
+            let level = levels[i] as usize;
+            step(&mut states[level], level, i);
+        }
+        states
     }
-    let mid = rows.start + (rows.len() / 2 / leaf_len).max(1) * leaf_len;
-    let (left, right) = partials.split_at_mut((mid - rows.start) / leaf_len * n_levels);
-    rayon::join(
-        || row_tree(rows.start..mid, left, leaf_len, n_levels, leaf, merge),
-        || row_tree(mid..rows.end, right, leaf_len, n_levels, leaf, merge),
-    );
-    for (l, r) in left[..n_levels].iter_mut().zip(&right[..n_levels]) {
-        merge(l, r);
+}
+
+impl<S: Send> Split for RowLeaves<'_, S> {
+    fn n_items(&self) -> usize {
+        self.rows.len()
+    }
+    fn split_at(self, mid: usize) -> (Self, Self) {
+        let (rows, rest) = self.rows.split_at(mid);
+        let (partials, others) = self
+            .partials
+            .split_at_mut(mid / self.leaf_len * self.n_levels);
+        let left = RowLeaves {
+            rows,
+            partials,
+            ..self
+        };
+        let right = RowLeaves {
+            rows: rest,
+            partials: others,
+            ..self
+        };
+        (left, right)
     }
 }
 
