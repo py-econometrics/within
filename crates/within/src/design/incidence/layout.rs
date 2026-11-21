@@ -184,33 +184,34 @@ impl CoefficientLayout {
 /// The coefficients a system solves for, `x`: every term's block, back to back in term order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Unknowns {
-    /// Per term, its block in `x`.
-    blocks: Vec<Range<usize>>,
+    /// Term `t`'s block in `x` is `starts[t]..starts[t + 1]`.
+    starts: Vec<usize>,
 }
 
 impl Unknowns {
     pub(crate) fn new(layout: &CoefficientLayout) -> Self {
-        let mut start = 0;
-        let blocks = layout
-            .terms
-            .iter()
-            .map(|term| {
-                let block = start..start + term.n_dofs();
-                start = block.end;
-                block
-            })
+        let starts = std::iter::once(0)
+            .chain(layout.terms.iter().scan(0, |end, term| {
+                *end += term.n_dofs();
+                Some(*end)
+            }))
             .collect();
-        Self { blocks }
+        Self { starts }
     }
 
     /// The number of unknowns.
     pub(crate) fn len(&self) -> usize {
-        self.blocks.last().map_or(0, |b| b.end)
+        self.starts[self.starts.len() - 1]
     }
 
     /// Term `term`'s block in `x`.
     pub(crate) fn block(&self, term: usize) -> Range<usize> {
-        self.blocks[term].clone()
+        self.starts[term]..self.starts[term + 1]
+    }
+
+    /// Where each term's block starts, then where the last ends.
+    pub(crate) fn starts(&self) -> &[usize] {
+        &self.starts
     }
 
     /// `channel`'s `n_levels` slots in `x`.

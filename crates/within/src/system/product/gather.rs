@@ -3,23 +3,29 @@
 use rayon::prelude::*;
 
 use crate::design::{RowKernel, TermBlock};
+use crate::system::OrthogonalDesign;
 use crate::PAR_THRESHOLD;
 
-/// `dst[i] = Σ_t Σ_c src[…] · loading_c(i)` over `terms`, times `scale[i]` when given.
-pub(crate) fn gather(terms: &[TermBlock<'_>], src: &[f64], dst: &mut [f64], scale: Option<&[f64]>) {
+/// `dst = D̃ src`, row `i` times `scale[i]` when given.
+pub(in crate::system) fn gather(
+    design: &OrthogonalDesign<'_>,
+    src: &[f64],
+    dst: &mut [f64],
+    scale: Option<&[f64]>,
+) {
     debug_assert!(scale.is_none_or(|s| s.len() == dst.len()));
-    debug_assert!(terms.iter().all(|t| t.levels().len() == dst.len()));
-    debug_assert!(terms.iter().all(|t| t.dofs().end <= src.len()));
+    debug_assert_eq!(design.n_obs(), dst.len());
+    debug_assert_eq!(src.len(), design.unknowns().len());
 
     dst.fill(0.0);
 
     for_each_chunk(dst, |chunk, row_start| {
-        for term in terms {
+        for (t, term) in design.terms().enumerate() {
             term.visit_rows(GatherTerm {
                 chunk: &mut *chunk,
                 row_start,
-                src,
-                term,
+                block: &src[design.unknowns().block(t)],
+                term: &term,
             });
         }
         if let Some(scale) = scale {
@@ -47,14 +53,15 @@ fn for_each_chunk(dst: &mut [f64], kernel: impl Fn(&mut [f64], usize) + Sync) {
 struct GatherTerm<'k, 't> {
     chunk: &'k mut [f64],
     row_start: usize,
-    src: &'k [f64],
+    /// The term's block of `x`.
+    block: &'k [f64],
     term: &'k TermBlock<'t>,
 }
 
 impl RowKernel for GatherTerm<'_, '_> {
     #[inline(always)]
     fn fixed<const C: usize>(self, row: impl Fn(usize) -> [f64; C] + Sync) {
-        let (layout, block) = (self.term.layout(), &self.src[self.term.dofs()]);
+        let (layout, block) = (self.term.layout(), self.block);
         let cols = std::array::from_fn(|c| &block[layout.block_column(c)]);
         gather_term(self.chunk, self.row_start, self.term.levels(), cols, row);
     }
@@ -63,7 +70,7 @@ impl RowKernel for GatherTerm<'_, '_> {
     fn dynamic(self) {
         // A dynamic column count cannot monomorphize a fixed arity.
         let (t, levels) = (self.term, self.term.levels());
-        let block = &self.src[t.dofs()];
+        let block = self.block;
         for (local, dst_val) in self.chunk.iter_mut().enumerate() {
             let i = self.row_start + local;
             let lev = levels[i] as usize;

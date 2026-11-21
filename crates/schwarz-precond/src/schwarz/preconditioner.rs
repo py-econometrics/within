@@ -6,7 +6,7 @@ use dyn_stack::{MemStack, StackReq};
 
 use crate::error::SolveError;
 use crate::local_solve::{LocalSolver, SubdomainEntry};
-use crate::parallel::{try_for_each_piece, Pieces};
+use crate::parallel::{try_for_each_piece, Pieces, Workspaces};
 use crate::prolongation::Prolongation;
 use crate::threads::Threads;
 use crate::Operator;
@@ -59,11 +59,8 @@ pub struct SchwarzPreconditioner<S: LocalSolver> {
     subdomains: Arc<Vec<SubdomainEntry<S>>>,
     /// Subdomain `i` owns slots `slot_starts[i]..slot_starts[i + 1]` of the stacked local vector.
     slot_starts: Arc<[usize]>,
-    /// Subdomain `i`'s local solve owns bytes `workspace_offsets[i]..[i + 1]` of an apply's
-    /// workspace, enough at every budget `local_threads` hands out.
-    workspace_offsets: Arc<[usize]>,
-    /// Every workspace starts on this boundary: a cache line, or the widest a local solve asks.
-    workspace_align: usize,
+    /// Subdomain `i`'s local solve's workspace, enough at every budget `local_threads` hands out.
+    workspaces: Workspaces,
     prolongation: Arc<Prolongation>,
     /// Total over largest subdomain work: below `OUTER_CAPACITY_TARGET` of the pool, the
     /// subdomains cannot fill it, so each local solve gets every thread.
@@ -93,32 +90,14 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
                 .flat_map(|e| e.global_indices().iter().copied()),
             n_dofs,
         );
-        let workspaces: Vec<StackReq> = entries
-            .iter()
-            .map(|e| {
-                let workspace = Self::LOCAL_BUDGETS
-                    .map(|t| e.solver().scratch(t))
-                    .into_iter()
-                    .fold(StackReq::EMPTY, StackReq::or);
-                assert!(
-                    workspace.align_bytes() > 0,
-                    "a local solve's scratch overflows"
-                );
-                workspace
-            })
-            .collect();
-        let workspace_align = (workspaces.iter())
-            .map(StackReq::align_bytes)
-            .fold(64, usize::max);
-        let workspace_offsets = std::iter::once(0)
-            .chain(workspaces.iter().scan(0, |end, w| {
-                *end += w.size_bytes().next_multiple_of(workspace_align);
-                Some(*end)
-            }))
-            .collect();
+        let workspaces = Workspaces::new(entries.iter().map(|e| {
+            Self::LOCAL_BUDGETS
+                .map(|t| e.solver().scratch(t))
+                .into_iter()
+                .fold(StackReq::EMPTY, StackReq::or)
+        }));
         Self {
-            workspace_offsets,
-            workspace_align,
+            workspaces,
             outer_capacity: Self::outer_capacity(&entries),
             subdomains: Arc::new(entries),
             slot_starts,
@@ -154,21 +133,15 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         self.slot_starts[self.subdomains.len()]
     }
 
-    fn workspace_len(&self) -> usize {
-        self.workspace_offsets[self.subdomains.len()]
-    }
-
     /// `z = M⁻¹ r` on `stack`: each subdomain writes only its own outputs and workspace.
     fn apply_on(&self, r: &[f64], z: &mut [f64], stack: &mut MemStack) -> Result<(), SolveError> {
         self.check_len("r", r.len())?;
         self.check_len("z", z.len())?;
         let threads = self.local_threads();
         let (mut outputs, stack) = stack.make_with(self.n_slots(), |_| 0.0);
-        let (workspaces, _) =
-            stack.make_aligned_uninit::<u8>(self.workspace_len(), self.workspace_align);
         let parts = (
             Pieces::new(&mut outputs, &self.slot_starts),
-            Pieces::new(workspaces, &self.workspace_offsets),
+            self.workspaces.carve(stack),
         );
         try_for_each_piece(parts, &|i, (out, workspace)| {
             let stack = MemStack::new(workspace.into_items());
@@ -225,8 +198,7 @@ impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {
             subdomains: Arc::clone(&self.subdomains),
             slot_starts: Arc::clone(&self.slot_starts),
             prolongation: Arc::clone(&self.prolongation),
-            workspace_offsets: Arc::clone(&self.workspace_offsets),
-            workspace_align: self.workspace_align,
+            workspaces: self.workspaces.clone(),
             outer_capacity: self.outer_capacity,
         }
     }
@@ -243,10 +215,7 @@ impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
 
     /// The stacked local outputs, then every local solve's workspace.
     fn scratch(&self) -> StackReq {
-        StackReq::new::<f64>(self.n_slots()).and(StackReq::new_aligned::<u8>(
-            self.workspace_len(),
-            self.workspace_align,
-        ))
+        StackReq::new::<f64>(self.n_slots()).and(self.workspaces.scratch())
     }
 
     fn apply_with(&self, r: &[f64], z: &mut [f64], stack: &mut MemStack) -> Result<(), SolveError> {

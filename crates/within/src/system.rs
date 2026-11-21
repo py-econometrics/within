@@ -4,6 +4,7 @@
 mod basis;
 mod gramian;
 mod operator;
+mod product;
 mod response;
 #[cfg(test)]
 mod tests;
@@ -65,10 +66,9 @@ impl<'a> OrthogonalDesign<'a> {
         &self.incidence
     }
 
-    /// Term `term`'s block `D̃_t`, at its slots in `x`.
+    /// Term `term`'s block `D̃_t`.
     fn term(&self, term: usize) -> TermBlock<'_> {
-        let at = self.unknowns.block(term).start;
-        TermBlock::new(self.incidence.term(term), self.slopes[term].columns(), at)
+        TermBlock::new(self.incidence.term(term), self.slopes[term].columns())
     }
 
     pub(crate) fn terms(&self) -> impl ExactSizeIterator<Item = TermBlock<'_>> {

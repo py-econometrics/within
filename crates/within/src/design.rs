@@ -3,7 +3,6 @@
 mod channel;
 mod effect;
 mod incidence;
-pub(crate) mod product;
 mod term;
 
 pub(crate) use channel::CoefficientPosition;

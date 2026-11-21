@@ -1,81 +1,36 @@
 //! Scatter: observation space → coefficient space, `x_t = D_tᵀ (s ⊙ v)`, summed per term in the
 //! order its [`LevelReduction`] fixes.
 
-use schwarz_precond::parallel::{for_each_piece, Pieces, Split};
-use schwarz_precond::{MemStack, StackReq};
+use schwarz_precond::parallel::{for_each_piece, Pieces, Split, Workspaces};
+use schwarz_precond::MemStack;
 
 use crate::design::LevelSlots;
 use crate::design::{RowKernel, TermBlock};
+use crate::system::OrthogonalDesign;
 
-/// Every term's workspace starts on this boundary.
-const WORKSPACE_ALIGN: usize = 64;
-
-/// What [`scatter`] takes from its stack: where each term's block and workspace start, then the
-/// workspaces.
-pub(crate) fn scatter_scratch(terms: &[TermBlock<'_>]) -> StackReq {
-    let bounds = StackReq::new::<usize>(terms.len() + 1);
-    let workspaces = workspace_bounds(terms).last().unwrap_or(0);
-    bounds
-        .and(bounds)
-        .and(StackReq::new_aligned::<u8>(workspaces, WORKSPACE_ALIGN))
+/// Each term's fold workspace for [`scatter`], in term order.
+pub(in crate::system) fn fold_workspaces(design: &OrthogonalDesign<'_>) -> Workspaces {
+    Workspaces::new(design.terms().map(|t| t.fold_scratch()))
 }
 
-/// Each term's first DOF, then the last term's end.
-fn block_bounds<'a>(terms: &'a [TermBlock<'_>]) -> impl Iterator<Item = usize> + 'a {
-    let end = terms.last().map_or(0, |t| t.dofs().end);
-    terms.iter().map(|t| t.dofs().start).chain([end])
-}
-
-/// Each term's workspace offset, then their end: a fold workspace for the per-level state
-/// [`TermBlock::visit_rows`] hands its kernel.
-fn workspace_bounds<'a>(terms: &'a [TermBlock<'_>]) -> impl Iterator<Item = usize> + 'a {
-    std::iter::once(0).chain(terms.iter().scan(0, |end, t| {
-        let workspace = t.fold_scratch::<f64>().array(state_width(t));
-        debug_assert!(workspace.align_bytes() <= WORKSPACE_ALIGN);
-        *end += workspace.size_bytes().next_multiple_of(WORKSPACE_ALIGN);
-        Some(*end)
-    }))
-}
-
-/// Columns per state of `t`'s fold: all of them where fused, else one at a time.
-fn state_width(t: &TermBlock<'_>) -> usize {
-    struct Width<'a>(&'a mut usize);
-    impl RowKernel for Width<'_> {
-        fn fixed<const C: usize>(self, _: impl Fn(usize) -> [f64; C] + Sync) {
-            *self.0 = C;
-        }
-        fn dynamic(self) {
-            *self.0 = 1;
-        }
-    }
-    let mut width = 0;
-    t.visit_rows(Width(&mut width));
-    width
-}
-
-/// `dst[dofs_t] = D_tᵀ (scale ⊙ src)` for `terms` in layout order; other slots are left as they
-/// are. The blocks and their workspaces are disjoint, so the terms run concurrently. `stack` holds
-/// at least [`scatter_scratch`].
-pub(crate) fn scatter(
-    terms: &[TermBlock<'_>],
+/// `dst = D̃ᵀ (scale ⊙ src)`. The terms' blocks and fold workspaces are disjoint, so the terms run
+/// concurrently. `folds` is [`fold_workspaces`] of `design`, and `stack` holds at least its scratch.
+pub(in crate::system) fn scatter(
+    design: &OrthogonalDesign<'_>,
+    folds: &Workspaces,
     src: &[f64],
     dst: &mut [f64],
     scale: Option<&[f64]>,
     stack: &mut MemStack,
 ) {
     debug_assert!(scale.is_none_or(|s| s.len() == src.len()));
-    debug_assert!(terms.iter().all(|t| t.levels().len() == src.len()));
-    let (blocks, stack) = stack.collect(block_bounds(terms));
-    let (workspace_bounds, stack) = stack.collect(workspace_bounds(terms));
-    let (workspaces, _) =
-        stack.make_aligned_uninit::<u8>(workspace_bounds[terms.len()], WORKSPACE_ALIGN);
+    debug_assert_eq!(design.n_obs(), src.len());
     let parts = (
-        Pieces::new(dst, &blocks),
-        Pieces::new(workspaces, &workspace_bounds),
+        Pieces::new(dst, design.unknowns().starts()),
+        folds.carve(stack),
     );
     for_each_piece(parts, &|i, (block, workspace)| {
-        let t = &terms[i];
-        let block = &mut block.into_items()[..t.dofs().len()];
+        let (t, block) = (&design.term(i), block.into_items());
         let stack = MemStack::new(workspace.into_items());
         match scale {
             Some(s) => scatter_block(t, block, &|i| s[i] * src[i], stack),
@@ -145,7 +100,7 @@ fn scatter_term<const C: usize>(
     let n_levels = term.layout().n_levels();
     let mut columns = block.chunks_mut(n_levels);
     let columns = Columns(std::array::from_fn(|_| columns.next().expect("C columns")));
-    term.fold_with(
+    term.incidence().fold_with(
         [0.0; C],
         &|sums: &mut [f64; C], _, i| {
             for (s, v) in sums.iter_mut().zip(values(i)) {

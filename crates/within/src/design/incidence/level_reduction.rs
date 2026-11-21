@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::ops::Range;
 
 use schwarz_precond::parallel::{fold, for_each_piece, Split};
-use schwarz_precond::{MemBuffer, MemStack, StackReq};
+use schwarz_precond::{MemStack, StackReq};
 
 use super::RowIndex;
 use crate::PAR_THRESHOLD;
@@ -84,30 +84,17 @@ impl LevelReduction {
 
 impl LevelReduction {
     /// What [`fold_with`](Self::fold_with) takes from its stack for states `S` over `n_rows` rows.
-    pub(crate) fn scratch<S>(&self, n_rows: usize, n_levels: usize) -> StackReq {
+    pub(super) fn scratch<S>(&self, n_rows: usize, n_levels: usize) -> StackReq {
         match self {
             Self::ByLevel(_) => StackReq::EMPTY,
             Self::ByRow => StackReq::new::<S>(by_row_leaves(n_rows, n_levels) * n_levels),
         }
     }
 
-    /// [`fold_with`](Self::fold_with) on a stack allocated for this call.
-    pub(crate) fn fold<S: Copy + Send + Sync, O: LevelSlots<S>>(
-        &self,
-        levels: &[u32],
-        init: S,
-        step: &(impl Fn(&mut S, usize, usize) + Sync),
-        merge: &(impl Fn(&mut S, &S) + Sync),
-        out: O,
-    ) {
-        let mut buffer = MemBuffer::new(self.scratch::<S>(levels.len(), out.n_items()));
-        self.fold_with(levels, init, step, merge, out, MemStack::new(&mut buffer));
-    }
-
     /// Each level's fold of its rows: `step(state, level, row)` from `init` over pieces this reduction
     /// fixes, `merge`d left to right in a fixed binary tree; threads only schedule the pieces. `stack`
     /// holds at least [`scratch`](Self::scratch).
-    pub(crate) fn fold_with<S: Copy + Send + Sync, O: LevelSlots<S>>(
+    pub(super) fn fold_with<S: Copy + Send + Sync, O: LevelSlots<S>>(
         &self,
         levels: &[u32],
         init: S,

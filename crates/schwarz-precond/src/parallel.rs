@@ -2,8 +2,11 @@
 //! parallel loops over pieces that each own their part of a buffer.
 
 use std::convert::Infallible;
+use std::mem::MaybeUninit;
 use std::ops::Range;
+use std::sync::Arc;
 
+use dyn_stack::{MemStack, StackReq};
 use rayon::iter::ParallelIterator;
 
 /// An ordered input that [`fold`] can cut at an index into a prefix and a suffix.
@@ -122,6 +125,49 @@ impl<T: Send> Split for Pieces<'_, T> {
                 offsets: &self.offsets[mid..],
             },
         )
+    }
+}
+
+/// One workspace per piece, side by side on a stack, each on one alignment: a cache line, or the
+/// widest a piece asks.
+#[derive(Clone)]
+pub struct Workspaces {
+    /// Piece `i` owns bytes `offsets[i]..offsets[i + 1]`.
+    offsets: Arc<[usize]>,
+    align: usize,
+}
+
+impl Workspaces {
+    /// A workspace for each of `each`, in order; panics if one overflows.
+    pub fn new(each: impl IntoIterator<Item = StackReq>) -> Self {
+        let each: Vec<StackReq> = each.into_iter().collect();
+        assert!(
+            each.iter().all(|w| w.align_bytes() > 0),
+            "a workspace overflows"
+        );
+        let align = each.iter().map(StackReq::align_bytes).fold(64, usize::max);
+        let offsets = std::iter::once(0)
+            .chain(each.iter().scan(0, |end, w| {
+                *end += w.size_bytes().next_multiple_of(align);
+                Some(*end)
+            }))
+            .collect();
+        Self { offsets, align }
+    }
+
+    /// What [`carve`](Self::carve) takes from a stack.
+    pub fn scratch(&self) -> StackReq {
+        StackReq::new_aligned::<u8>(self.len(), self.align)
+    }
+
+    /// Every piece's workspace, from `stack`.
+    pub fn carve<'s>(&'s self, stack: &'s mut MemStack) -> Pieces<'s, MaybeUninit<u8>> {
+        let (bytes, _) = stack.make_aligned_uninit::<u8>(self.len(), self.align);
+        Pieces::new(bytes, &self.offsets)
+    }
+
+    fn len(&self) -> usize {
+        self.offsets[self.offsets.len() - 1]
     }
 }
 

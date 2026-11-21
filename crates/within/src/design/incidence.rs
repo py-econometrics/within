@@ -16,7 +16,7 @@ pub(crate) use row_index::RowIndex;
 use std::borrow::Cow;
 
 use rayon::prelude::*;
-use schwarz_precond::{MemStack, StackReq};
+use schwarz_precond::{MemBuffer, MemStack, StackReq};
 
 /// One term's level of each observation, in the design's row order.
 #[derive(Debug, Clone)]
@@ -53,13 +53,13 @@ impl<'p> TermIncidence<'p> {
         merge: &(impl Fn(&mut S, &S) + Sync),
         out: impl LevelSlots<S>,
     ) {
-        self.rows
-            .reduction
-            .fold(&self.rows.levels, init, step, merge, out);
+        let mut buffer = MemBuffer::new(self.fold_scratch::<S>());
+        self.fold_with(init, step, merge, out, MemStack::new(&mut buffer));
     }
 
     /// What [`fold_with`](Self::fold_with) takes from its stack for states `S`.
-    pub(crate) fn fold_scratch<S>(&self, n_levels: usize) -> StackReq {
+    pub(crate) fn fold_scratch<S>(&self) -> StackReq {
+        let n_levels = self.layout.n_levels();
         self.rows
             .reduction
             .scratch::<S>(self.rows.levels.len(), n_levels)
