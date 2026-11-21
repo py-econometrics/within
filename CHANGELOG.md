@@ -33,12 +33,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - **BREAKING:** The serialized `Preconditioner` wire format moved v19 → v20; 0.4.0 bytes no longer decode.
 - **BREAKING:** A `Preconditioner` is a built map plus the configuration whose ladder it belongs to: `variant_name()` names the map, so an unescalated `Adaptive` handle reports `"Diagonal"`, and `config()` of an escalated one returns its `Adaptive` configuration. Reusing either resumes its ladder as before. The wire-format fixture moves v22 → v23 (#427).
 - **BREAKING:** The Schwarz settings are one public type, `Schwarz { local_solver }`: `PreconditionerConfig::Additive { local_solver }` is now `PreconditionerConfig::Schwarz(Schwarz { local_solver })`, and `Adaptive { local_solver, stall }` is `Adaptive { stall, schwarz }`. Python's `PreconditionerConfig.Additive` and `.Adaptive` are unchanged (#427).
+- Slope whitening folds a term's slope columns together, four means and six Gram entries per row pass instead of one accumulator each: `Solver::new` is 10–19% faster with two or more slopes, bit-identical.
 
 ### Fixed
 
 - A solve returns bitwise-identical coefficients, demeaned response, residual and iteration count at any thread count, run after run: LSMR inner products, the Schwarz prolongation and the design adjoint sum in an order fixed by the data, never by Rayon's split. Repeated `Adaptive` solves on one `Solver` may still differ (#370) (#472).
 - Whitened slopes are orthonormal within each level to rounding: slopes are centred on a double-word level mean and whitened twice (CholeskyQR2), removing errors of order eps·|mean|/sd and eps·κ(G). A slope whose within-level spread sits at its mean's rounding is now reported unidentified (#514).
 - LSMR now audits normal-equation tolerance exits in the plain metric. Stops hidden by singular or deflating preconditioners restart and may end in `FalseConvergence` (#389; addresses part of #455).
+- A term without slopes reports the intercept of a level whose rows all weigh zero in `unidentified`, as slope terms already did.
 
 ## [0.4.0] - 2026-10-09
 
