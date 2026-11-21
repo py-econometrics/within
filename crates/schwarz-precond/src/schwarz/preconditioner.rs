@@ -59,8 +59,8 @@ pub struct SchwarzPreconditioner<S: LocalSolver> {
     subdomains: Arc<Vec<SubdomainEntry<S>>>,
     /// Subdomain `i` owns slots `slot_starts[i]..slot_starts[i + 1]` of the stacked local vector.
     slot_starts: Arc<[usize]>,
-    /// Subdomain `i`'s local solve's workspace, enough at every budget `local_threads` hands out.
-    workspaces: Workspaces,
+    /// Per budget in [`LOCAL_BUDGETS`](Self::LOCAL_BUDGETS): each local solve's workspace at it.
+    workspaces: [Workspaces; 2],
     prolongation: Arc<Prolongation>,
     /// Total over largest subdomain work: below `OUTER_CAPACITY_TARGET` of the pool, the
     /// subdomains cannot fill it, so each local solve gets every thread.
@@ -90,12 +90,8 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
                 .flat_map(|e| e.global_indices().iter().copied()),
             n_dofs,
         );
-        let workspaces = Workspaces::new(entries.iter().map(|e| {
-            Self::LOCAL_BUDGETS
-                .map(|t| e.solver().scratch(t))
-                .into_iter()
-                .fold(StackReq::EMPTY, StackReq::or)
-        }));
+        let workspaces = Self::LOCAL_BUDGETS
+            .map(|t| Workspaces::new(entries.iter().map(|e| e.solver().scratch(t))));
         Self {
             workspaces,
             outer_capacity: Self::outer_capacity(&entries),
@@ -137,11 +133,11 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
     fn apply_on(&self, r: &[f64], z: &mut [f64], stack: &mut MemStack) -> Result<(), SolveError> {
         self.check_len("r", r.len())?;
         self.check_len("z", z.len())?;
-        let threads = self.local_threads();
+        let (threads, workspaces) = self.local_budget();
         let (mut outputs, stack) = stack.make_with(self.n_slots(), |_| 0.0);
         let parts = (
             Pieces::new(&mut outputs, &self.slot_starts),
-            self.workspaces.carve(stack),
+            workspaces.carve(stack),
         );
         try_for_each_piece(parts, &|i, (out, workspace)| {
             let stack = MemStack::new(workspace.into_items());
@@ -167,17 +163,19 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         })
     }
 
-    /// Every budget `local_threads` hands a local solve, which each workspace is sized for.
+    /// Every budget `local_budget` hands a local solve.
     const LOCAL_BUDGETS: [Threads; 2] = [Threads::All, Threads::ONE];
 
-    /// Every thread to each local solve, unless the subdomains alone already fill the pool.
-    fn local_threads(&self) -> Threads {
+    /// Each local solve's budget in this pool, with the workspaces sized for it: every thread,
+    /// unless the subdomains alone already fill the pool.
+    fn local_budget(&self) -> (Threads, &Workspaces) {
         let [all, one] = Self::LOCAL_BUDGETS;
+        let [at_all, at_one] = &self.workspaces;
         let threads = rayon::current_num_threads().max(1);
         if self.outer_capacity < threads as f64 * Self::OUTER_CAPACITY_TARGET {
-            all
+            (all, at_all)
         } else {
-            one
+            (one, at_one)
         }
     }
 }
@@ -213,9 +211,11 @@ impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
         self.n_dofs()
     }
 
-    /// The stacked local outputs, then every local solve's workspace.
+    /// The stacked local outputs, then every local solve's workspace at the budget this pool
+    /// gives it; an apply in another pool may need more.
     fn scratch(&self) -> StackReq {
-        StackReq::new::<f64>(self.n_slots()).and(self.workspaces.scratch())
+        let (_, workspaces) = self.local_budget();
+        StackReq::new::<f64>(self.n_slots()).and(workspaces.scratch())
     }
 
     fn apply_with(&self, r: &[f64], z: &mut [f64], stack: &mut MemStack) -> Result<(), SolveError> {

@@ -649,3 +649,53 @@ fn a_local_solve_gets_the_alignment_it_asks_for() {
     schwarz.apply(&[2.0, 4.0, 6.0], &mut z).expect("apply");
     assert_eq!(z, [1.0, 2.0, 3.0]);
 }
+
+/// Halves `x`; asks for a mebibyte at every thread and a cache line alone, and has `work` to share.
+struct ByBudget {
+    work: usize,
+}
+
+impl LocalSolver for ByBudget {
+    fn n_local(&self) -> usize {
+        1
+    }
+    fn scratch(&self, threads: Threads) -> StackReq {
+        match threads {
+            Threads::All => StackReq::new::<u8>(1 << 20),
+            Threads::Count(_) => StackReq::new::<u8>(64),
+        }
+    }
+    fn solve_local(
+        &self,
+        x: &mut [f64],
+        threads: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), LocalSolveError> {
+        let _ = stack.make_uninit::<u8>(self.scratch(threads).size_bytes());
+        x[0] *= 0.5;
+        Ok(())
+    }
+    fn inner_parallelism_work_estimate(&self) -> usize {
+        self.work
+    }
+}
+
+#[rstest]
+#[case::one_subdomain_takes_every_thread(1, 1, true)]
+#[case::subdomains_without_work_take_one(8, 0, false)]
+fn the_stack_holds_each_local_solve_at_the_budget_this_pool_gives_it(
+    #[case] n_subdomains: u32,
+    #[case] work: usize,
+    #[case] every_thread: bool,
+) {
+    let entries = (0..n_subdomains)
+        .map(|i| make_entry(SubdomainCore::uniform(vec![i]), ByBudget { work }))
+        .collect();
+    let schwarz = SchwarzPreconditioner::new(entries);
+    in_pool(4, || {
+        assert_eq!(schwarz.scratch().size_bytes() >= 1 << 20, every_thread);
+        let mut z = vec![0.0; n_subdomains as usize];
+        schwarz.apply(&vec![2.0; z.len()], &mut z).expect("apply");
+        assert!(z.iter().all(|&v| v == 1.0));
+    });
+}
