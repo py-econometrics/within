@@ -124,12 +124,17 @@ fn test_mlsmr_underdetermined_system() {
         fn ncols(&self) -> usize {
             3
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
             y[0] = x[0];
             y[1] = x[1];
             Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_adjoint_with(
+            &self,
+            u: &[f64],
+            x: &mut [f64],
+            _: &mut MemStack,
+        ) -> Result<(), SolveError> {
             x[0] = u[0];
             x[1] = u[1];
             x[2] = 0.0;
@@ -155,13 +160,18 @@ fn test_mlsmr_rank_deficient_system() {
         fn ncols(&self) -> usize {
             2
         }
-        fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
             let s = x[0] + x[1];
             y[0] = s;
             y[1] = 2.0 * s;
             Ok(())
         }
-        fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+        fn apply_adjoint_with(
+            &self,
+            u: &[f64],
+            x: &mut [f64],
+            _: &mut MemStack,
+        ) -> Result<(), SolveError> {
             let s = u[0] + 2.0 * u[1];
             x[0] = s;
             x[1] = s;

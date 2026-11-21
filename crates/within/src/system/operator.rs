@@ -1,6 +1,6 @@
 //! `A = W^{1/2} D̃`: the system matrix LSMR iterates on, over `D̃`'s term blocks.
 
-use schwarz_precond::Operator;
+use schwarz_precond::{MemStack, Operator};
 
 use super::OrthogonalDesign;
 use crate::design::product::{gather, scatter};
@@ -38,13 +38,23 @@ impl Operator for DesignOperator<'_> {
         self.n_dofs
     }
 
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+    fn apply_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!((x.len(), y.len()), (self.n_dofs, self.n_obs));
         gather(&self.blocks, x, y, self.sqrt);
         Ok(())
     }
 
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), schwarz_precond::SolveError> {
+    fn apply_adjoint_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        _: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
         debug_assert_eq!((x.len(), y.len()), (self.n_obs, self.n_dofs));
         scatter(&self.blocks, x, y, self.sqrt);
         Ok(())

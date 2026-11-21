@@ -615,3 +615,37 @@ fn with_n_dofs_pads_uncovered_tail_and_applies_zero() {
     // Covered DOFs: 1.0 * (4.0 / 2.0) = 2.0; uncovered tail stays exactly 0.
     assert_eq!(z, vec![2.0, 2.0, 0.0, 0.0]);
 }
+
+/// Halves `x` on a workspace that must start on a 256-byte boundary.
+struct WideAligned;
+
+impl LocalSolver for WideAligned {
+    fn n_local(&self) -> usize {
+        1
+    }
+    fn scratch(&self, _: Threads) -> StackReq {
+        StackReq::new_aligned::<u8>(100, 256)
+    }
+    fn solve_local(
+        &self,
+        x: &mut [f64],
+        _: Threads,
+        stack: &mut MemStack,
+    ) -> Result<(), LocalSolveError> {
+        let (workspace, _) = stack.make_aligned_uninit::<u8>(100, 256);
+        assert_eq!(workspace.as_ptr() as usize % 256, 0);
+        x[0] *= 0.5;
+        Ok(())
+    }
+}
+
+#[test]
+fn a_local_solve_gets_the_alignment_it_asks_for() {
+    let entries = (0..3)
+        .map(|i| make_entry(SubdomainCore::uniform(vec![i]), WideAligned))
+        .collect();
+    let schwarz = SchwarzPreconditioner::new(entries);
+    let mut z = vec![0.0; 3];
+    schwarz.apply(&[2.0, 4.0, 6.0], &mut z).expect("apply");
+    assert_eq!(z, [1.0, 2.0, 3.0]);
+}
