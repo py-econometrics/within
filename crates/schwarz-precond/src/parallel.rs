@@ -1,6 +1,10 @@
-//! Parallel sums whose summation order is fixed by the input length, never by the thread count.
+//! Parallel sums whose summation order is fixed by the input length, never by the thread count, and
+//! parallel loops over pieces that each own their part of a buffer.
 
+use std::convert::Infallible;
 use std::ops::Range;
+
+use rayon::iter::ParallelIterator;
 
 /// An ordered input that [`fold`] can cut at an index into a prefix and a suffix.
 pub trait Split: Sized + Send {
@@ -80,6 +84,80 @@ pub fn fold<P: Split, T: Send>(
 /// Subtrees this small run on the calling thread: a `join` per piece costs more than it spreads.
 const SEQUENTIAL_ITEMS: usize = 1 << 16;
 
+/// A buffer cut into consecutive pieces: piece `i` owns `items[offsets[i]..offsets[i + 1]]`.
+pub struct Pieces<'a, T> {
+    items: &'a mut [T],
+    offsets: &'a [usize],
+}
+
+impl<'a, T> Pieces<'a, T> {
+    /// `items` cut at the non-decreasing, non-empty `offsets`; items outside their span are left out.
+    pub fn new(items: &'a mut [T], offsets: &'a [usize]) -> Self {
+        let span = offsets[0]..offsets[offsets.len() - 1];
+        Self {
+            items: &mut items[span],
+            offsets,
+        }
+    }
+
+    /// The items of every piece, in order.
+    pub fn into_items(self) -> &'a mut [T] {
+        self.items
+    }
+}
+
+impl<T: Send> Split for Pieces<'_, T> {
+    fn n_items(&self) -> usize {
+        self.offsets.len() - 1
+    }
+    fn split_at(self, mid: usize) -> (Self, Self) {
+        let (left, right) = self.items.split_at_mut(self.offsets[mid] - self.offsets[0]);
+        (
+            Self {
+                items: left,
+                offsets: &self.offsets[..=mid],
+            },
+            Self {
+                items: right,
+                offsets: &self.offsets[mid..],
+            },
+        )
+    }
+}
+
+/// `piece(i, part)` for each item `i` of `input`, `part` holding item `i` alone; the pool decides
+/// which run at once. After an error no new piece starts, but running ones finish, and which of
+/// several errors returns is unspecified.
+pub fn try_for_each_piece<P: Split, E: Send>(
+    input: P,
+    piece: &(impl Fn(usize, P) -> Result<(), E> + Sync),
+) -> Result<(), E> {
+    rayon::iter::split((0, input), |(start, input): (usize, P)| {
+        let n = input.n_items();
+        if n < 2 {
+            return ((start, input), None);
+        }
+        let (left, right) = input.split_at(n / 2);
+        ((start, left), Some((start + n / 2, right)))
+    })
+    .try_for_each(|(start, mut rest)| {
+        for i in start..start + rest.n_items() {
+            let (part, tail) = rest.split_at(1);
+            piece(i, part)?;
+            rest = tail;
+        }
+        Ok(())
+    })
+}
+
+/// [`try_for_each_piece`] for a `piece` that cannot fail.
+pub fn for_each_piece<P: Split>(input: P, piece: &(impl Fn(usize, P) + Sync)) {
+    let Ok(()) = try_for_each_piece(input, &|i, part| {
+        piece(i, part);
+        Ok::<(), Infallible>(())
+    });
+}
+
 /// Runs `f` in a fresh pool of `threads`.
 #[cfg(any(test, feature = "testing"))]
 pub fn in_pool<R: Send>(threads: usize, f: impl FnOnce() -> R + Send) -> R {
@@ -124,6 +202,19 @@ mod tests {
             .all(|r| r.len() <= 8 && (n == 0 || !r.is_empty())));
         let covered: Vec<usize> = leaves.into_iter().flatten().collect();
         assert_eq!(covered, (0..n).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn each_piece_gets_its_own_items_and_the_rest_stay() {
+        let offsets = [2, 2, 5, 6, 10];
+        let mut items = [usize::MAX; 12];
+        in_pool(3, || {
+            for_each_piece(Pieces::new(&mut items, &offsets), &|i, part| {
+                part.into_items().fill(i);
+            });
+        });
+        let max = usize::MAX;
+        assert_eq!(items, [max, max, 1, 1, 1, 2, 3, 3, 3, 3, max, max]);
     }
 
     #[test]

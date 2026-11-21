@@ -1,14 +1,12 @@
 //! [`SchwarzPreconditioner`]: each DOF sums its subdomains' local outputs in subdomain order.
 
-use std::mem::MaybeUninit;
-use std::ops::Range;
 use std::sync::Arc;
 
 use dyn_stack::{MemStack, StackReq};
-use rayon::prelude::*;
 
 use crate::error::SolveError;
 use crate::local_solve::{LocalSolver, SubdomainEntry};
+use crate::parallel::{try_for_each_piece, Pieces};
 use crate::prolongation::Prolongation;
 use crate::threads::Threads;
 use crate::Operator;
@@ -168,34 +166,20 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
         let (mut outputs, stack) = stack.make_with(self.n_slots(), |_| 0.0);
         let (workspaces, _) =
             stack.make_aligned_uninit::<u8>(self.workspace_len(), self.workspace_align);
-        let all = Span {
-            ids: 0..self.subdomains.len(),
-            outputs: &mut outputs,
-            workspaces,
-        };
-        rayon::iter::split(all, |span| {
-            span.halve(&self.slot_starts, &self.workspace_offsets)
-        })
-        .try_for_each(|span| self.solve_span(span, r, threads))?;
-        self.prolongation.apply(&outputs, z);
-        Ok(())
-    }
-
-    fn solve_span(
-        &self,
-        mut span: Span<'_>,
-        r: &[f64],
-        threads: Threads,
-    ) -> Result<(), SolveError> {
-        for i in span.ids.clone() {
-            let (out, workspace) = span.parts_of(i, &self.slot_starts, &self.workspace_offsets);
+        let parts = (
+            Pieces::new(&mut outputs, &self.slot_starts),
+            Pieces::new(workspaces, &self.workspace_offsets),
+        );
+        try_for_each_piece(parts, &|i, (out, workspace)| {
+            let stack = MemStack::new(workspace.into_items());
             self.subdomains[i]
-                .apply_weighted_local(r, out, threads, MemStack::new(workspace))
+                .apply_weighted_local(r, out.into_items(), threads, stack)
                 .map_err(|source| SolveError::LocalSolveFailed {
                     subdomain: i,
                     source,
-                })?;
-        }
+                })
+        })?;
+        self.prolongation.apply(&outputs, z);
         Ok(())
     }
 
@@ -232,53 +216,6 @@ fn covered_span<S: LocalSolver>(entries: &[SubdomainEntry<S>]) -> usize {
         .flat_map(|e| e.global_indices().iter().copied())
         .max()
         .map_or(0, |m| m as usize + 1)
-}
-
-/// Consecutive subdomains `ids` with exactly their slots of the local outputs and their workspaces.
-struct Span<'a> {
-    ids: Range<usize>,
-    outputs: &'a mut [f64],
-    workspaces: &'a mut [MaybeUninit<u8>],
-}
-
-impl Span<'_> {
-    fn halve(self, slots: &[usize], workspaces: &[usize]) -> (Self, Option<Self>) {
-        if self.ids.len() < 2 {
-            return (self, None);
-        }
-        let mid = self.ids.start + self.ids.len() / 2;
-        let (out_l, out_r) = self
-            .outputs
-            .split_at_mut(slots[mid] - slots[self.ids.start]);
-        let (workspace_l, workspace_r) = self
-            .workspaces
-            .split_at_mut(workspaces[mid] - workspaces[self.ids.start]);
-        let left = Span {
-            ids: self.ids.start..mid,
-            outputs: out_l,
-            workspaces: workspace_l,
-        };
-        let right = Span {
-            ids: mid..self.ids.end,
-            outputs: out_r,
-            workspaces: workspace_r,
-        };
-        (left, Some(right))
-    }
-
-    /// Subdomain `i`'s slots and workspace, `i` one of `ids`.
-    fn parts_of(
-        &mut self,
-        i: usize,
-        slots: &[usize],
-        workspaces: &[usize],
-    ) -> (&mut [f64], &mut [MaybeUninit<u8>]) {
-        let (s0, w0) = (slots[self.ids.start], workspaces[self.ids.start]);
-        (
-            &mut self.outputs[slots[i] - s0..slots[i + 1] - s0],
-            &mut self.workspaces[workspaces[i] - w0..workspaces[i + 1] - w0],
-        )
-    }
 }
 
 impl<S: LocalSolver> Clone for SchwarzPreconditioner<S> {

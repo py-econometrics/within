@@ -1,8 +1,9 @@
 //! How a term's per-level reduction `E_tᵀ` is cut into fixed parallel pieces, chosen from its rows.
 
+use std::marker::PhantomData;
 use std::ops::Range;
 
-use rayon::prelude::*;
+use schwarz_precond::parallel::{for_each_piece, Split};
 use schwarz_precond::{MemBuffer, MemStack, StackReq};
 
 use super::RowIndex;
@@ -140,22 +141,16 @@ impl LevelReduction {
                     }
                     fixed_tree(positions, LEVEL_LEAF, &leaf, merge)
                 };
-                let mut groups = Vec::with_capacity(n_levels.div_ceil(LEVEL_GROUP));
-                while out.len() > 0 {
-                    let mid = LEVEL_GROUP.min(out.len());
-                    let (group, rest) = out.split_at(mid);
-                    groups.push(group);
-                    out = rest;
-                }
-                let fill = |(g, mut group): (usize, O)| {
-                    for k in 0..LevelSlots::len(&group) {
-                        group.set(k, level_fold(g * LEVEL_GROUP + k));
+                let fill = |first: usize, mut slots: O| {
+                    for k in 0..LevelSlots::len(&slots) {
+                        slots.set(k, level_fold(first + k));
                     }
                 };
                 if parallel {
-                    groups.into_par_iter().enumerate().for_each(fill);
+                    let groups = Groups(out, PhantomData);
+                    for_each_piece(groups, &|g, Groups(group, _)| fill(g * LEVEL_GROUP, group));
                 } else {
-                    groups.into_iter().enumerate().for_each(fill);
+                    fill(0, out);
                 }
             }
             Self::ByRow => {
@@ -181,6 +176,20 @@ impl LevelReduction {
                 }
             }
         }
+    }
+}
+
+/// Level slots cut into [`LEVEL_GROUP`] levels per piece, the last one shorter.
+struct Groups<S, O>(O, PhantomData<fn() -> S>);
+
+impl<S, O: LevelSlots<S>> Split for Groups<S, O> {
+    fn n_items(&self) -> usize {
+        self.0.len().div_ceil(LEVEL_GROUP)
+    }
+    fn split_at(self, mid: usize) -> (Self, Self) {
+        let cut = (mid * LEVEL_GROUP).min(self.0.len());
+        let (left, right) = self.0.split_at(cut);
+        (Groups(left, PhantomData), Groups(right, PhantomData))
     }
 }
 

@@ -1,25 +1,56 @@
 //! Scatter: observation space → coefficient space, `x_t = D_tᵀ (s ⊙ v)`, summed per term in the
 //! order its [`LevelReduction`] fixes.
 
-use std::mem::MaybeUninit;
-
-use rayon::prelude::*;
+use schwarz_precond::parallel::{for_each_piece, Pieces};
 use schwarz_precond::{MemStack, StackReq};
 
 use crate::design::LevelSlots;
 use crate::design::{RowKernel, TermBlock};
 
-/// What [`scatter`] takes from its stack: each term's fold workspace, side by side.
+/// Every term's workspace starts on this boundary.
+const WORKSPACE_ALIGN: usize = 64;
+
+/// What [`scatter`] takes from its stack: where each term's block and workspace start, then the
+/// workspaces.
 pub(crate) fn scatter_scratch(terms: &[TermBlock<'_>]) -> StackReq {
-    terms
-        .iter()
-        .map(term_workspace)
-        .fold(StackReq::EMPTY, StackReq::and)
+    let bounds = StackReq::new::<usize>(terms.len() + 1);
+    let workspaces = workspace_bounds(terms).last().unwrap_or(0);
+    bounds
+        .and(bounds)
+        .and(StackReq::new_aligned::<u8>(workspaces, WORKSPACE_ALIGN))
 }
 
-/// One term's fold workspace for its widest per-level state, `[f64; C]` over its `C` columns.
-fn term_workspace(t: &TermBlock<'_>) -> StackReq {
-    t.fold_scratch::<f64>().array(t.layout().n_columns())
+/// Each term's first DOF, then the last term's end.
+fn block_bounds<'a>(terms: &'a [TermBlock<'_>]) -> impl Iterator<Item = usize> + 'a {
+    let end = terms.last().map_or(0, |t| t.dofs().end);
+    terms.iter().map(|t| t.dofs().start).chain([end])
+}
+
+/// Each term's workspace offset, then their end: a fold workspace for the per-level state
+/// [`TermBlock::visit_rows`] hands its kernel.
+fn workspace_bounds<'a>(terms: &'a [TermBlock<'_>]) -> impl Iterator<Item = usize> + 'a {
+    std::iter::once(0).chain(terms.iter().scan(0, |end, t| {
+        let workspace = t.fold_scratch::<f64>().array(state_width(t));
+        debug_assert!(workspace.align_bytes() <= WORKSPACE_ALIGN);
+        *end += workspace.size_bytes().next_multiple_of(WORKSPACE_ALIGN);
+        Some(*end)
+    }))
+}
+
+/// Columns per state of `t`'s fold: all of them where fused, else one at a time.
+fn state_width(t: &TermBlock<'_>) -> usize {
+    struct Width<'a>(&'a mut usize);
+    impl RowKernel for Width<'_> {
+        fn fixed<const C: usize>(self, _: impl Fn(usize) -> [f64; C] + Sync) {
+            *self.0 = C;
+        }
+        fn dynamic(self) {
+            *self.0 = 1;
+        }
+    }
+    let mut width = 0;
+    t.visit_rows(Width(&mut width));
+    width
 }
 
 /// `dst[dofs_t] = D_tᵀ (scale ⊙ src)` for `terms` in layout order; other slots are left as they
@@ -34,28 +65,23 @@ pub(crate) fn scatter(
 ) {
     debug_assert!(scale.is_none_or(|s| s.len() == src.len()));
     debug_assert!(terms.iter().all(|t| t.levels().len() == src.len()));
-    let mut parts: Vec<(&mut [f64], &mut [MaybeUninit<u8>])> = Vec::with_capacity(terms.len());
-    let (mut rest, mut start, mut stack) = (dst, 0, stack);
-    for t in terms {
-        let dofs = t.dofs();
-        let tail = std::mem::take(&mut rest).split_at_mut(dofs.start - start).1;
-        let (block, tail) = tail.split_at_mut(dofs.len());
-        let req = term_workspace(t);
-        let (workspace, below) =
-            stack.make_aligned_uninit::<u8>(req.size_bytes(), req.align_bytes());
-        parts.push((block, workspace));
-        (rest, start, stack) = (tail, dofs.end, below);
-    }
-    terms
-        .par_iter()
-        .zip(parts)
-        .for_each(|(t, (block, workspace))| {
-            let stack = MemStack::new(workspace);
-            match scale {
-                Some(s) => scatter_block(t, block, &|i| s[i] * src[i], stack),
-                None => scatter_block(t, block, &|i| src[i], stack),
-            }
-        });
+    let (blocks, stack) = stack.collect(block_bounds(terms));
+    let (workspace_bounds, stack) = stack.collect(workspace_bounds(terms));
+    let (workspaces, _) =
+        stack.make_aligned_uninit::<u8>(workspace_bounds[terms.len()], WORKSPACE_ALIGN);
+    let parts = (
+        Pieces::new(dst, &blocks),
+        Pieces::new(workspaces, &workspace_bounds),
+    );
+    for_each_piece(parts, &|i, (block, workspace)| {
+        let t = &terms[i];
+        let block = &mut block.into_items()[..t.dofs().len()];
+        let stack = MemStack::new(workspace.into_items());
+        match scale {
+            Some(s) => scatter_block(t, block, &|i| s[i] * src[i], stack),
+            None => scatter_block(t, block, &|i| src[i], stack),
+        }
+    });
 }
 
 /// One term's `block = D_tᵀ v`, with `base(i)` the row value of `v`.
