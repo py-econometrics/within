@@ -25,9 +25,6 @@ pub(crate) struct OrthogonalSlopes {
     shift: Vec<f64>,
     /// Per level × slope, whether the data identify the caller's slope `j`.
     kept: Vec<bool>,
-    /// Per level, whether it carries no weight, so its intercept is unidentified; empty without
-    /// an intercept.
-    weightless: Vec<bool>,
 }
 
 impl Slopes<'_> {
@@ -55,15 +52,10 @@ impl Slopes<'_> {
                 factor: Vec::new(),
                 shift: Vec::new(),
                 kept: Vec::new(),
-                weightless: Vec::new(),
             };
         }
         let moments = LevelMoments::build(term, &views(&columns), weights);
         let (first, kept) = Sweeps::orthonormalize(&moments, n_levels, v);
-        let weightless = match layout.intercept() {
-            true => (0..n_levels).map(|l| moments.weightless(l)).collect(),
-            false => Vec::new(),
-        };
         drop(moments);
         first.apply(term.levels(), &mut columns);
 
@@ -79,7 +71,6 @@ impl Slopes<'_> {
             factor,
             shift,
             kept,
-            weightless,
         }
     }
 }
@@ -89,19 +80,17 @@ impl OrthogonalSlopes {
         &self.columns
     }
 
-    /// Per level, which of the caller's slopes the data identify; nothing for a slope-free term.
-    pub(super) fn kept(&self) -> impl Iterator<Item = &[bool]> {
-        self.kept.chunks_exact(self.columns.len().max(1))
+    /// The caller's slopes the data cannot identify in `level`.
+    pub(super) fn dropped(&self, level: usize) -> impl Iterator<Item = usize> + '_ {
+        let v = self.columns.len();
+        let kept = &self.kept[level * v..][..v];
+        (0..v).filter(|&j| !kept[j])
     }
 
-    /// Whether `level` carries no weight, so a slope term's intercept there is unidentified.
-    pub(super) fn weightless(&self, level: usize) -> bool {
-        self.weightless.get(level) == Some(&true)
-    }
-
-    /// Per level, how many slopes the data identify.
-    pub(super) fn ranks(&self) -> impl Iterator<Item = usize> + '_ {
-        self.kept().map(|kept| kept.iter().filter(|&&k| k).count())
+    /// How many slopes the data identify in `level`.
+    pub(super) fn rank(&self, level: usize) -> usize {
+        let v = self.columns.len();
+        self.kept[level * v..][..v].iter().filter(|&&k| k).count()
     }
 
     /// Map this term's block of solve-basis coefficients back: `block ← R_t·block`.

@@ -2,7 +2,8 @@
 
 use rayon::prelude::*;
 
-use crate::design::Incidence;
+use crate::design::{Incidence, TermIncidence};
+use crate::linalg::add_compensated;
 use crate::BuildError;
 use crate::PAR_THRESHOLD;
 
@@ -66,6 +67,36 @@ impl RowWeights {
     /// The Gram weight `w` of row `obs`: the operator applies `√w`, so its normal matrix carries `w`.
     pub(crate) fn weight(&self, obs: usize) -> f64 {
         self.sqrt.as_deref().map_or(1.0, |s| s[obs] * s[obs])
+    }
+
+    /// `E_tᵀ w`: each level's weight `w_l`, summed in the pieces the term's reduction fixes.
+    pub(crate) fn level_weights(&self, term: TermIncidence<'_>) -> Vec<f64> {
+        let mut sums = vec![0.0; term.layout().n_levels()];
+        match self.sqrt() {
+            // A sum of ones is exact in any order.
+            None => term.fold(
+                0.0,
+                &|s: &mut f64, _, _| *s += 1.0,
+                &|l: &mut f64, r: &f64| *l += r,
+                &mut sums[..],
+            ),
+            Some(_) => {
+                let mut compensated = vec![(0.0, 0.0); sums.len()];
+                term.fold(
+                    (0.0, 0.0),
+                    &|(s, c): &mut (f64, f64), _, row| add_compensated(s, c, self.weight(row)),
+                    &|(s, c): &mut (f64, f64), &(rs, rc): &(f64, f64)| {
+                        add_compensated(s, c, rs);
+                        *c += rc;
+                    },
+                    &mut compensated[..],
+                );
+                for (d, (s, c)) in sums.iter_mut().zip(compensated) {
+                    *d = s + c;
+                }
+            }
+        }
+        sums
     }
 
     /// Some row weighs zero, so [`Self::unscale`] cannot recover it.

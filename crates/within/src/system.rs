@@ -15,7 +15,7 @@ pub(crate) use operator::DesignOperator;
 pub(crate) use response::{Fit, Response};
 use weights::RowWeights;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
 
@@ -33,6 +33,8 @@ pub(crate) struct OrthogonalDesign<'a> {
     /// `X̃ = X·R` with `R`, per term.
     slopes: Vec<OrthogonalSlopes>,
     weights: RowWeights,
+    /// Per term, each level's weight `w_l`, summed once when first read.
+    level_weights: Vec<OnceLock<Vec<f64>>>,
     unknowns: Unknowns,
 }
 
@@ -51,10 +53,14 @@ impl<'a> Design<'a> {
             .map(|(term, slopes)| slopes.orthogonalize(incidence.term(term), &weights))
             .collect();
         let unknowns = Unknowns::new(incidence.layout());
+        let level_weights = (0..incidence.layout().n_terms())
+            .map(|_| OnceLock::new())
+            .collect();
         Ok(OrthogonalDesign {
             incidence,
             slopes,
             weights,
+            level_weights,
             unknowns,
         })
     }
@@ -87,6 +93,13 @@ impl<'a> OrthogonalDesign<'a> {
         self.incidence.n_obs()
     }
 
+    /// Each level's weight `w_l` in term `term`: the intercept's entry of `diag(G)`; `0` where `W`
+    /// erases the level.
+    fn level_weights(&self, term: usize) -> &[f64] {
+        self.level_weights[term]
+            .get_or_init(|| self.weights.level_weights(self.incidence.term(term)))
+    }
+
     /// The coefficients the system solves for.
     pub(crate) fn unknowns(&self) -> &Unknowns {
         &self.unknowns
@@ -100,18 +113,19 @@ impl<'a> OrthogonalDesign<'a> {
         }
     }
 
-    /// Directions the data cannot identify, ascending in `(term, level, column)`: a slope term's
-    /// weightless levels and dropped slopes.
+    /// Directions the data cannot identify, ascending in `(term, level, column)`: the intercepts of
+    /// levels `W` erases and dropped slopes.
     pub(crate) fn unidentified(&self) -> impl Iterator<Item = CoefficientPosition> + '_ {
         let terms = self.layout().terms().iter().zip(&self.slopes);
-        terms.enumerate().flat_map(|(term, (layout, slopes))| {
-            slopes.kept().enumerate().flat_map(move |(level, kept)| {
+        terms.enumerate().flat_map(move |(term, (layout, slopes))| {
+            // Only a zero-weight row can erase a level.
+            let weights = (self.weights.erases_rows() && layout.intercept())
+                .then(|| self.level_weights(term));
+            (0..layout.n_levels()).flat_map(move |level| {
                 let intercept = layout
                     .intercept_column()
-                    .filter(|_| slopes.weightless(level));
-                let dropped = (0..kept.len())
-                    .filter(|&j| !kept[j])
-                    .map(|j| layout.slope_column(j));
+                    .filter(|_| weights.is_some_and(|w| w[level] == 0.0));
+                let dropped = slopes.dropped(level).map(|j| layout.slope_column(j));
                 intercept
                     .into_iter()
                     .chain(dropped)

@@ -157,16 +157,14 @@ impl ShiftedMean {
     }
 }
 
-/// Each level's `v` weighted slope means, row-major, and whether it carries any weight.
+/// Each level's `v` weighted slope means, row-major.
 struct LevelMeans {
     means: Vec<LevelMean>,
-    weightless: Vec<bool>,
 }
 
 impl LevelMeans {
     fn new(rows: &WeightedRows<'_>, zs: &[&[f64]]) -> Self {
         let v = zs.len();
-        let mut weightless = Vec::new();
         let mut means = vec![LevelMean::default(); rows.n_levels * v];
         for (j, z) in zs.iter().enumerate() {
             let mut column = rows.fold(
@@ -186,11 +184,8 @@ impl LevelMeans {
             for (level, m) in column.iter().enumerate() {
                 means[level * v + j] = m.mean();
             }
-            if j == 0 {
-                weightless = column.iter().map(|m| m.w_sum.hi == 0.0).collect();
-            }
         }
-        Self { means, weightless }
+        Self { means }
     }
 }
 
@@ -227,11 +222,6 @@ impl LevelMoments {
             means,
             gram,
         }
-    }
-
-    /// Whether the level carries no weight, tracked only with an intercept.
-    pub(crate) fn weightless(&self, level: usize) -> bool {
-        self.means.as_ref().is_some_and(|m| m.weightless[level])
     }
 
     /// The level's weighted slope means, tracked only with an intercept.

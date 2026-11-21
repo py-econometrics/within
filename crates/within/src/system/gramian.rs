@@ -6,7 +6,6 @@ use rayon::prelude::*;
 use super::{OrthogonalDesign, TermBlock};
 use crate::design::CoefficientLayout;
 use crate::design::{ChannelPair, Unknowns};
-use crate::linalg::add_compensated;
 
 /// The normal matrix `G = AᵀA` for `A = W^{1/2} D̃`.
 #[derive(Clone, Copy)]
@@ -36,41 +35,11 @@ impl<'p> Gramian<'p> {
         let layout = self.layout().term(term);
         let mut diag = vec![0.0; layout.n_dofs()];
         if let Some(column) = layout.intercept_column() {
-            // `diag(E_tᵀ W E_t)`: per level `Σ w`, in the pieces the term's reduction fixes.
-            let (rows, sums) = (
-                self.design.incidence.term(term),
-                &mut diag[layout.block_column(column)],
-            );
-            match self.design.weights.sqrt() {
-                // A sum of ones is exact in any order.
-                None => rows.fold(
-                    0.0,
-                    &|s: &mut f64, _, _| *s += 1.0,
-                    &|l: &mut f64, r: &f64| *l += r,
-                    sums,
-                ),
-                Some(_) => {
-                    let weights = &self.design.weights;
-                    let mut compensated = vec![(0.0, 0.0); sums.len()];
-                    rows.fold(
-                        (0.0, 0.0),
-                        &|(s, c): &mut (f64, f64), _, obs| {
-                            add_compensated(s, c, weights.weight(obs))
-                        },
-                        &|(s, c): &mut (f64, f64), &(rs, rc): &(f64, f64)| {
-                            add_compensated(s, c, rs);
-                            *c += rc;
-                        },
-                        &mut compensated[..],
-                    );
-                    for (d, (s, c)) in sums.iter_mut().zip(compensated) {
-                        *d = s + c;
-                    }
-                }
-            }
+            diag[layout.block_column(column)].copy_from_slice(self.design.level_weights(term));
         }
-        for (level, rank) in self.design.slopes[term].ranks().enumerate() {
-            for j in 0..rank {
+        let slopes = &self.design.slopes[term];
+        for level in 0..layout.n_levels() {
+            for j in 0..slopes.rank(level) {
                 diag[layout.block_column(layout.slope_column(j)).start + level] = 1.0;
             }
         }
