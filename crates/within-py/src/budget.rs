@@ -15,20 +15,19 @@ static POOLS: Mutex<BTreeMap<usize, &'static ThreadPool>> = Mutex::new(BTreeMap:
 pub(crate) struct ThreadBudget(Option<&'static ThreadPool>);
 
 impl ThreadBudget {
-    /// A count lies in `1..=available_parallelism`, which bounds the cache to one pool per count.
+    /// A count above the available parallelism runs on that many, which bounds the cache.
     pub(crate) fn new(threads: Option<isize>) -> PyResult<Self> {
         let Some(threads) = threads else {
             return Ok(Self(None));
         };
-        let max = std::thread::available_parallelism().map_or(1, usize::from);
         let threads = usize::try_from(threads)
             .ok()
-            .filter(|t| (1..=max).contains(t))
+            .filter(|&t| t >= 1)
             .ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "threads must lie in 1..={max}, the available parallelism; got {threads}"
-                ))
+                PyValueError::new_err(format!("threads must be at least 1; got {threads}"))
             })?;
+        let max = std::thread::available_parallelism().map_or(1, usize::from);
+        let threads = threads.min(max);
         let mut pools = POOLS.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(&pool) = pools.get(&threads) {
             return Ok(Self(Some(pool)));

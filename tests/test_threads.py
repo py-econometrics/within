@@ -54,11 +54,20 @@ def test_every_entry_point_takes_a_thread_count(panel) -> None:
     assert m.apply(x, threads=1).tobytes() == m.apply(x, threads=2).tobytes()
 
 
-@pytest.mark.parametrize("threads", [0, -1, 10**6])
-def test_a_count_outside_the_available_parallelism_is_rejected(panel, threads) -> None:
+@pytest.mark.parametrize("threads", [0, -1])
+def test_a_count_below_one_is_rejected(panel, threads) -> None:
     categories, ys = panel
-    with pytest.raises(ValueError, match="threads must lie in 1..="):
+    with pytest.raises(ValueError, match="threads must be at least 1"):
         within.solve(categories, np.ascontiguousarray(ys[:, 0]), threads=threads)
+
+
+def test_a_count_above_the_available_parallelism_runs_on_all_of_it(panel) -> None:
+    categories, ys = panel
+    y = np.ascontiguousarray(ys[:, 0])
+    reference = within.solve(categories, y, threads=1)
+    assert (
+        within.solve(categories, y, threads=10**6).x.tobytes() == reference.x.tobytes()
+    )
 
 
 _POOL_PROBE = textwrap.dedent(

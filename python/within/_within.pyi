@@ -293,10 +293,10 @@ def solve(
             ``PreconditionerConfig.Additive(...)`` overrides the local-solver
             settings. A previously-built ``Preconditioner`` instance
             reuses an existing factorisation.
-        threads: Run on a pool of this many threads, from 1 to the available
-            parallelism, built on first use and kept for later calls with the
-            same count. Default: the global Rayon pool. The result is the same
-            at any count.
+        threads: Run on a pool of this many threads, built on first use and
+            kept for later calls with the same count; a count above the
+            available parallelism runs on that many. Default: the global Rayon
+            pool. The result is the same at any count.
 
     Returns:
         A ``SolveResult`` with coefficients, demeaned response, convergence

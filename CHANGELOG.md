@@ -12,7 +12,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Python: `solve`, `solve_batch`, `Design`, `Solver`, `Solver.solve`, `Solver.solve_batch` and `Preconditioner.apply` take `threads=`, from 1 to the available parallelism: the call runs on a pool of that many threads, built on first use and reused by later calls with the same count. Results are the same at any count (#511).
+- Python: `solve`, `solve_batch`, `Design`, `Solver`, `Solver.solve`, `Solver.solve_batch` and `Preconditioner.apply` take `threads=`: the call runs on a pool of that many threads, at most the available parallelism, built on first use and reused by later calls with the same count. Results are the same at any count (#511).
 
 ### Changed
 
