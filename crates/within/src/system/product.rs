@@ -135,7 +135,7 @@ pub(super) fn scatter(
     });
 }
 
-/// One term's `block = D_tᵀ v`, with `base(i)` the row value of `v`.
+/// One term's `block = D̃_tᵀ v`, with `base(i)` the row value of `v`.
 #[inline(always)]
 fn scatter_block(
     t: &TermBlock<'_>,
