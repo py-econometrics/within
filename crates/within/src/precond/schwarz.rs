@@ -55,10 +55,7 @@ pub(super) fn build(
 }
 
 /// `n_dofs` may exceed the span of subdomain indices; an uncovered column resolves to `0`.
-pub(super) fn build_additive(
-    domains: Vec<LocalDomain>,
-    n_dofs: usize,
-) -> Result<FeSchwarz, BuildError> {
+fn build_additive(domains: Vec<LocalDomain>, n_dofs: usize) -> Result<FeSchwarz, BuildError> {
     let entries = domains
         .into_par_iter()
         .map(build_entry)
@@ -75,13 +72,13 @@ fn build_entry(domain: LocalDomain) -> Result<SubdomainEntry<BlockSolver>, Build
 
 /// A factor-pair Schwarz domain paired with its factored local operator.
 #[derive(Clone)]
-pub(super) struct LocalDomain {
+struct LocalDomain {
     core: SubdomainCore,
     solver: BlockSolver,
 }
 
 /// Same-factor channel pairs are exactly orthogonal after orthogonalization, so never enumerated.
-pub(super) fn build_local_domains(
+fn build_local_domains(
     gramian: Gramian<'_>,
     config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
@@ -214,7 +211,7 @@ fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {
 
 /// One pair's factor; the subdomain's local order is the factored matrix's numbering.
 #[derive(Clone, Serialize, Deserialize)]
-pub(super) struct BlockSolver {
+struct BlockSolver {
     inverse: ApproxInverse,
 }
 
