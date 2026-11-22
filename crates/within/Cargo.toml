@@ -27,6 +27,7 @@ criterion = { version = "0.7", features = ["html_reports"] }
 rand = "0.10"
 proptest = "1"
 rstest.workspace = true
+dhat = "0.3"
 
 [[bench]]
 name = "fixest"
