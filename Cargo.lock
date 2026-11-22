@@ -2262,6 +2262,7 @@ dependencies = [
  "numpy",
  "postcard",
  "pyo3",
+ "rayon",
  "within",
 ]
 

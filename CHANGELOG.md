@@ -10,6 +10,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Long weighted Gram diagonals use compensated accumulation.
 - Weights near the float range are scaled by a power of two, so a level's weight sum stays finite.
 
+### Added
+
+- Python: `solve`, `solve_batch`, `Design`, `Solver`, `Solver.solve`, `Solver.solve_batch` and `Preconditioner.apply` take `threads=`: the call runs on a pool of that many threads, at most the available parallelism, built on first use and reused by later calls with the same count. Results are the same at any count (#511).
+
 ### Changed
 
 - **BREAKING:** Python 3.9 is no longer supported; wheels are `cp310-abi3`.

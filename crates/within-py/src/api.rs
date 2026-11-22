@@ -12,6 +12,7 @@ use within::{
     PreconditionerInput, SolveResult, Solver, WithinError,
 };
 
+use crate::budget::ThreadBudget;
 use crate::config::{resolve_lsmr_config, resolve_precond_input, PyPreconditioner};
 use crate::convert::{
     coerce_to_slice, column_refs, extract_columns, readonly_f64_1d, readonly_f64_2d,
@@ -57,7 +58,7 @@ fn build_and_solve_batch<'a>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (design, y, weights=None, options=None, preconditioner=None))]
+#[pyo3(signature = (design, y, weights=None, options=None, preconditioner=None, threads=None))]
 pub fn solve<'py>(
     py: Python<'py>,
     design: &Bound<'py, PyAny>,
@@ -65,7 +66,9 @@ pub fn solve<'py>(
     weights: Option<&Bound<'py, PyAny>>,
     options: Option<&Bound<'py, PyAny>>,
     preconditioner: Option<&Bound<'py, PyAny>>,
+    threads: Option<isize>,
 ) -> PyResult<PySolveResult> {
+    let budget = ThreadBudget::new(threads)?;
     let params = resolve_lsmr_config(options)?;
     let precond = resolve_precond_input(preconditioner)?;
     let y = readonly_f64_1d("y", y)?;
@@ -76,20 +79,20 @@ pub fn solve<'py>(
     let w_view = weights.as_ref().map(|w| w.as_array());
 
     match extract_design(py, design)? {
-        DesignSource::Persistent(design) => run_solve_with_warnings(py, move || {
+        DesignSource::Persistent(design) => run_solve_with_warnings(py, budget, move || {
             let y_cow = coerce_to_slice(&y_arr);
             let w_cow = w_view.as_ref().map(coerce_to_slice);
             build_and_solve(design, &y_cow, w_cow.as_deref(), &params, precond)
         }),
         DesignSource::Categories(categories) => {
             let cats = categories.as_array();
-            run_solve_with_warnings(py, move || {
+            run_solve_with_warnings(py, budget, move || {
                 let y_cow = coerce_to_slice(&y_arr);
                 let w_cow = w_view.as_ref().map(coerce_to_slice);
                 build_and_solve(cats, &y_cow, w_cow.as_deref(), &params, precond)
             })
         }
-        DesignSource::Effects(terms) => run_solve_with_warnings(py, move || {
+        DesignSource::Effects(terms) => run_solve_with_warnings(py, budget, move || {
             let effects: Vec<_> = terms.iter().map(|term| term.get().as_effect()).collect();
             let y_cow = coerce_to_slice(&y_arr);
             let w_cow = w_view.as_ref().map(coerce_to_slice);
@@ -99,7 +102,7 @@ pub fn solve<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (design, Y, weights=None, options=None, preconditioner=None))]
+#[pyo3(signature = (design, Y, weights=None, options=None, preconditioner=None, threads=None))]
 pub fn solve_batch<'py>(
     py: Python<'py>,
     design: &Bound<'py, PyAny>,
@@ -107,7 +110,9 @@ pub fn solve_batch<'py>(
     weights: Option<&Bound<'py, PyAny>>,
     options: Option<&Bound<'py, PyAny>>,
     preconditioner: Option<&Bound<'py, PyAny>>,
+    threads: Option<isize>,
 ) -> PyResult<PyBatchSolveResult> {
+    let budget = ThreadBudget::new(threads)?;
     let params = resolve_lsmr_config(options)?;
     let precond = resolve_precond_input(preconditioner)?;
     let y = readonly_f64_2d("Y", Y)?;
@@ -119,7 +124,7 @@ pub fn solve_batch<'py>(
     match extract_design(py, design)? {
         DesignSource::Persistent(design) => {
             validate_batch_rows(y_arr.nrows(), design.n_obs())?;
-            run_batch_with_warnings(py, move || {
+            run_batch_with_warnings(py, budget, move || {
                 let columns = extract_columns(&y_arr);
                 let col_refs = column_refs(&columns);
                 let w_cow = w_view.as_ref().map(coerce_to_slice);
@@ -129,7 +134,7 @@ pub fn solve_batch<'py>(
         DesignSource::Categories(categories) => {
             let cats = categories.as_array();
             validate_batch_rows(y_arr.nrows(), cats.nrows())?;
-            run_batch_with_warnings(py, move || {
+            run_batch_with_warnings(py, budget, move || {
                 let columns = extract_columns(&y_arr);
                 let col_refs = column_refs(&columns);
                 let w_cow = w_view.as_ref().map(coerce_to_slice);
@@ -140,7 +145,7 @@ pub fn solve_batch<'py>(
             if let Some(first) = terms.first() {
                 validate_batch_rows(y_arr.nrows(), first.get().levels.len())?;
             }
-            run_batch_with_warnings(py, move || {
+            run_batch_with_warnings(py, budget, move || {
                 let effects: Vec<_> = terms.iter().map(|term| term.get().as_effect()).collect();
                 let columns = extract_columns(&y_arr);
                 let col_refs = column_refs(&columns);
@@ -234,18 +239,26 @@ fn extract_design<'py>(py: Python<'_>, design: &Bound<'py, PyAny>) -> PyResult<D
     Ok(DesignSource::Effects(effects))
 }
 
-fn extract_owned_design(py: Python<'_>, design: &Bound<'_, PyAny>) -> PyResult<Design<'static>> {
+fn extract_owned_design(
+    py: Python<'_>,
+    design: &Bound<'_, PyAny>,
+    budget: ThreadBudget,
+) -> PyResult<Design<'static>> {
     match extract_design(py, design)? {
         DesignSource::Persistent(design) => Ok(design),
         DesignSource::Categories(categories) => {
             let categories = categories.as_array();
-            py.detach(move || Design::from_categories(categories).map(Design::into_owned))
-                .map_err(value_err)
+            py.detach(move || {
+                budget.run(|| Design::from_categories(categories).map(Design::into_owned))
+            })
+            .map_err(value_err)
         }
         DesignSource::Effects(terms) => py
             .detach(move || {
-                let effects: Vec<_> = terms.iter().map(|term| term.get().as_effect()).collect();
-                Design::new(effects).map(Design::into_owned)
+                budget.run(|| {
+                    let effects: Vec<_> = terms.iter().map(|term| term.get().as_effect()).collect();
+                    Design::new(effects).map(Design::into_owned)
+                })
             })
             .map_err(value_err),
     }
@@ -261,9 +274,10 @@ pub struct PyDesign {
 #[pymethods]
 impl PyDesign {
     #[new]
-    fn new(py: Python<'_>, design: &Bound<'_, PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (design, threads=None))]
+    fn new(py: Python<'_>, design: &Bound<'_, PyAny>, threads: Option<isize>) -> PyResult<Self> {
         Ok(Self {
-            design: extract_owned_design(py, design)?,
+            design: extract_owned_design(py, design, ThreadBudget::new(threads)?)?,
         })
     }
 
@@ -297,24 +311,28 @@ pub struct PySolver {
 #[pymethods]
 impl PySolver {
     #[new]
-    #[pyo3(signature = (design, weights=None, preconditioner=None))]
+    #[pyo3(signature = (design, weights=None, preconditioner=None, threads=None))]
     fn new<'py>(
         py: Python<'py>,
         design: &Bound<'py, PyAny>,
         weights: Option<&Bound<'py, PyAny>>,
         preconditioner: Option<&Bound<'py, PyAny>>,
+        threads: Option<isize>,
     ) -> PyResult<Self> {
+        let budget = ThreadBudget::new(threads)?;
         let weights = weights.map(|w| readonly_f64_1d("weights", w)).transpose()?;
         let w_view = weights.as_ref().map(|w| w.as_array());
         let precond = resolve_precond_input(preconditioner)?;
 
-        let design = extract_owned_design(py, design)?;
+        let design = extract_owned_design(py, design, budget)?;
 
         // `BuildError` carries no Python types, so it maps to an exception once the GIL is back.
         let solver = py
-            .detach(move || -> Result<Solver<'static>, BuildError> {
-                let w_cow = w_view.as_ref().map(coerce_to_slice);
-                Solver::new(design, w_cow.as_deref(), precond)
+            .detach(move || {
+                budget.run(|| -> Result<Solver<'static>, BuildError> {
+                    let w_cow = w_view.as_ref().map(coerce_to_slice);
+                    Solver::new(design, w_cow.as_deref(), precond)
+                })
             })
             .map_err(value_err)?;
 
@@ -326,31 +344,35 @@ impl PySolver {
     }
 
     /// Solve for a single response vector with the given LSMR tuning.
-    #[pyo3(name = "solve", signature = (y, options=None))]
+    #[pyo3(name = "solve", signature = (y, options=None, threads=None))]
     fn solve_py<'py>(
         &self,
         py: Python<'py>,
         y: &Bound<'py, PyAny>,
         options: Option<&Bound<'py, PyAny>>,
+        threads: Option<isize>,
     ) -> PyResult<PySolveResult> {
+        let budget = ThreadBudget::new(threads)?;
         let y = readonly_f64_1d("y", y)?;
         let y_arr = y.as_array();
         let y_cow = coerce_to_slice(&y_arr);
         let params = resolve_lsmr_config(options)?;
 
-        let result = run_solve(py, || self.solver.solve(&y_cow, &params))?;
+        let result = run_solve(py, budget, || self.solver.solve(&y_cow, &params))?;
         self.emit_deferred_warnings(py)?;
         Ok(result)
     }
 
     /// `Y` is `(n_obs, k)` with one response per column.
-    #[pyo3(name = "solve_batch", signature = (Y, options=None))]
+    #[pyo3(name = "solve_batch", signature = (Y, options=None, threads=None))]
     fn solve_batch_py<'py>(
         &self,
         py: Python<'py>,
         #[allow(non_snake_case)] Y: &Bound<'py, PyAny>,
         options: Option<&Bound<'py, PyAny>>,
+        threads: Option<isize>,
     ) -> PyResult<PyBatchSolveResult> {
+        let budget = ThreadBudget::new(threads)?;
         let y = readonly_f64_2d("Y", Y)?;
         let y_arr = y.as_array();
 
@@ -368,7 +390,7 @@ impl PySolver {
 
         let params = resolve_lsmr_config(options)?;
 
-        let result = run_batch(py, || self.solver.solve_batch(&col_refs, &params))?;
+        let result = run_batch(py, budget, || self.solver.solve_batch(&col_refs, &params))?;
         self.emit_deferred_warnings(py)?;
         Ok(result)
     }

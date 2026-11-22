@@ -248,7 +248,13 @@ class Design:
     Constructs and owns the native observation storage for reuse across solvers.
     """
 
-    def __init__(self, design: Design | NDArray[np.uint32] | list[Effect]) -> None: ...
+    def __init__(
+        self,
+        design: Design | NDArray[np.uint32] | list[Effect],
+        threads: int | None = None,
+    ) -> None:
+        """Build the design on ``threads`` threads; see :func:`solve`."""
+        ...
     @property
     def n_obs(self) -> int: ...
     @property
@@ -260,6 +266,7 @@ def solve(
     weights: NDArray[np.float64] | None = None,
     options: LsmrOptions | None = None,
     preconditioner: (PreconditionerConfig | Preconditioner | None) = None,
+    threads: int | None = None,
 ) -> SolveResult:
     """Solve fixed-effects normal equations for a single response vector.
 
@@ -286,6 +293,10 @@ def solve(
             ``PreconditionerConfig.Additive(...)`` overrides the local-solver
             settings. A previously-built ``Preconditioner`` instance
             reuses an existing factorisation.
+        threads: Run on a pool of this many threads, built on first use and
+            kept for later calls with the same count; a count above the
+            available parallelism runs on that many. Default: the global Rayon
+            pool. The result is the same at any count.
 
     Returns:
         A ``SolveResult`` with coefficients, demeaned response, convergence
@@ -316,6 +327,7 @@ def solve_batch(
     weights: NDArray[np.float64] | None = None,
     options: LsmrOptions | None = None,
     preconditioner: (PreconditionerConfig | Preconditioner | None) = None,
+    threads: int | None = None,
 ) -> BatchSolveResult:
     """Solve fixed-effects normal equations for multiple response vectors.
 
@@ -333,6 +345,7 @@ def solve_batch(
         options: LSMR solver tuning. Default: ``LsmrOptions(tol=1e-8, maxiter=1000)``.
         preconditioner: Preconditioner configuration; see :func:`solve` for the
             accepted forms.
+        threads: Thread count; see :func:`solve`.
 
     Returns:
         A ``BatchSolveResult`` with stacked coefficients and per-RHS metadata.
@@ -356,8 +369,10 @@ class Preconditioner:
     """
 
     def __init__(self, data: bytes) -> None: ...
-    def apply(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Apply the preconditioner: ``y = M⁻¹ x``."""
+    def apply(
+        self, x: NDArray[np.float64], threads: int | None = None
+    ) -> NDArray[np.float64]:
+        """Apply the preconditioner: ``y = M⁻¹ x``; ``threads`` as in :func:`solve`."""
         ...
     @property
     def nrows(self) -> int: ...
@@ -382,11 +397,15 @@ class Solver:
         design: Design | NDArray[np.uint32] | list[Effect],
         weights: NDArray[np.float64] | None = None,
         preconditioner: (PreconditionerConfig | Preconditioner | None) = None,
-    ) -> None: ...
+        threads: int | None = None,
+    ) -> None:
+        """Build the design and preconditioner on ``threads`` threads; see :func:`solve`."""
+        ...
     def solve(
         self,
         y: NDArray[np.float64],
         options: LsmrOptions | None = None,
+        threads: int | None = None,
     ) -> SolveResult:
         """Solve for a single response vector with the given LSMR tuning."""
         ...
@@ -394,6 +413,7 @@ class Solver:
         self,
         Y: NDArray[np.float64],
         options: LsmrOptions | None = None,
+        threads: int | None = None,
     ) -> BatchSolveResult:
         """Solve for multiple response vectors in parallel."""
         ...

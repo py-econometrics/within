@@ -43,6 +43,9 @@ Two-tier public API:
   (``LocalSolverConfig``, ``ApproxCholConfig``, ``ApproxSchurConfig``,
   ``ScalingConfig``, ``Schur``, ``Staleness``).
 
+Threads: every heavy call takes ``threads=``, the size of the pool it runs on;
+the default is the global Rayon pool.
+
 Thread safety: the heavy work runs with the interpreter detached and reads the
 caller's arrays in place. As with NumPy itself, an input array must not be
 mutated from another thread while a ``within`` call is reading it.

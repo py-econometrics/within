@@ -6,12 +6,14 @@
 //! to [`within`]; every heavy call detaches from the interpreter via [`Python::detach`].
 //! Usage docs live in `python/within/` and the `within._within.pyi` stub.
 //!
-//! `gil_used = false`: no `&mut self`, no global state; numpy inputs are read in place.
+//! `gil_used = false`: no `&mut self`, no global state but the locked pool cache in [`budget`];
+//! numpy inputs are read in place.
 //! Callers must not mutate an array from another thread while a call reads it.
 
 use pyo3::prelude::*;
 
 mod api;
+mod budget;
 mod config;
 mod convert;
 mod results;
