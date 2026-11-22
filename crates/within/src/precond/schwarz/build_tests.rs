@@ -3,13 +3,12 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::{build_local_domains, LocalDomain};
+use super::{build_additive, build_local_domains, LocalDomain};
 use crate::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, SchurMode,
     DEFAULT_DENSE_SCHUR_THRESHOLD,
 };
 use crate::design::Design;
-use crate::precond::build_additive;
 use crate::system::Gramian;
 use crate::system::OrthogonalDesign;
 use schwarz_precond::{LocalSolver, MemBuffer, MemStack, Operator, Threads};

@@ -1,20 +1,20 @@
 //! The least-squares system in solve coordinates for one weighting `W`: `D̃ = D·R`, `A = W^{1/2} D̃`,
-//! `G = AᵀA`, and the change of variables to and from the caller's problem.
+//! `G = AᵀA`, and the change of variables to and from the caller's problem: `b = W^{1/2} P y` in,
+//! `β = R x̂` and `y − D β` out.
 
 mod basis;
 mod gramian;
 mod operator;
 mod product;
-mod response;
 #[cfg(test)]
 mod tests;
 mod weights;
 
 pub(crate) use gramian::Gramian;
 pub(crate) use operator::DesignOperator;
-pub(crate) use response::{Fit, Response};
 use weights::RowWeights;
 
+use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
@@ -22,7 +22,7 @@ use rayon::prelude::*;
 use crate::design::TermBlock;
 use crate::design::{Channel, CoefficientPosition};
 use crate::design::{CoefficientLayout, Design, Incidence, Unknowns};
-use crate::BuildError;
+use crate::{BuildError, WithinError};
 use basis::OrthogonalSlopes;
 
 /// `D̃ = E • X̃ = D·R` for one weighting `W`: `R` orthogonalizes each term's columns within each
@@ -113,6 +113,27 @@ impl<'a> OrthogonalDesign<'a> {
         }
     }
 
+    /// `b = W^{1/2} P y`: `y` in the internal observation order and weighted.
+    pub(crate) fn response<'r>(&'r self, y: &'r [f64]) -> Result<Response<'r>, WithinError> {
+        // `W^{1/2} y` zips y with sqrt-weights, silently truncating when `y.len() > n_rows`.
+        if y.len() != self.n_obs() {
+            return Err(WithinError::ResponseLengthMismatch {
+                expected: self.n_obs(),
+                got: y.len(),
+            });
+        }
+        if let Some((index, &value)) = y.iter().enumerate().find(|&(_, &v)| !v.is_finite()) {
+            return Err(WithinError::InvalidResponse { index, value });
+        }
+        let y = self.incidence.permute_obs_in(y);
+        let weighted = self.weights.scaled(&y);
+        Ok(Response {
+            design: self,
+            y,
+            weighted,
+        })
+    }
+
     /// Directions the data cannot identify, ascending in `(term, level, column)`: the intercepts of
     /// levels `W` erases and dropped slopes.
     pub(crate) fn unidentified(&self) -> impl Iterator<Item = CoefficientPosition> + '_ {
@@ -136,4 +157,48 @@ impl<'a> OrthogonalDesign<'a> {
             })
         })
     }
+}
+
+/// One response in the internal observation order of `design`, with its `W^{1/2}`-weighted image.
+pub(crate) struct Response<'r> {
+    design: &'r OrthogonalDesign<'r>,
+    y: Cow<'r, [f64]>,
+    /// `None` when unweighted, where the weighted image is `y` itself.
+    weighted: Option<Vec<f64>>,
+}
+
+impl Response<'_> {
+    pub(crate) fn weighted(&self) -> &[f64] {
+        self.weighted.as_deref().unwrap_or(&self.y)
+    }
+
+    /// `β = R x̂` and `y − D β`, read off the measured `b − A x̂` unless a zero weight erased a row.
+    pub(crate) fn fit(self, mut x: Vec<f64>, measured: Option<Vec<f64>>) -> Fit {
+        let design = self.design;
+        let demeaned = match measured {
+            Some(mut residual) if !design.weights.erases_rows() => {
+                design.weights.unscale(&mut residual);
+                residual
+            }
+            measured => {
+                let mut demeaned = measured.unwrap_or_else(|| vec![0.0; self.y.len()]);
+                product::gather(design, &x, &mut demeaned, None);
+                for (d, &yi) in demeaned.iter_mut().zip(self.y.iter()) {
+                    *d = yi - *d;
+                }
+                demeaned
+            }
+        };
+        design.back_transform(&mut x);
+        Fit {
+            x,
+            demeaned: design.incidence.permute_obs_out(demeaned),
+        }
+    }
+}
+
+/// Coefficients in the caller's parametrization; `y − D x` in the caller's observation order.
+pub(crate) struct Fit {
+    pub(crate) x: Vec<f64>,
+    pub(crate) demeaned: Vec<f64>,
 }

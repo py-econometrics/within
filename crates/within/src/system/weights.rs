@@ -9,7 +9,7 @@ use crate::PAR_THRESHOLD;
 
 /// `W^{1/2}` in a design's internal row order; the identity when unweighted.
 #[derive(Debug, Clone)]
-pub(crate) struct RowWeights {
+pub(super) struct RowWeights {
     sqrt: Option<Vec<f64>>,
     /// Some row weighs zero, so `W^{1/2}` cannot be undone.
     erases_rows: bool,
@@ -17,7 +17,7 @@ pub(crate) struct RowWeights {
 
 impl RowWeights {
     /// Validate caller-order weights, then hold `√w` in `E`'s internal row order.
-    pub(crate) fn new(
+    pub(super) fn new(
         incidence: &Incidence<'_>,
         weights: Option<&[f64]>,
     ) -> Result<Self, BuildError> {
@@ -60,17 +60,17 @@ impl RowWeights {
     }
 
     /// `√w` per row, for a kernel that picks its loop once; `None` is unweighted.
-    pub(crate) fn sqrt(&self) -> Option<&[f64]> {
+    pub(super) fn sqrt(&self) -> Option<&[f64]> {
         self.sqrt.as_deref()
     }
 
     /// The Gram weight `w` of row `obs`: the operator applies `√w`, so its normal matrix carries `w`.
-    pub(crate) fn weight(&self, obs: usize) -> f64 {
+    pub(super) fn weight(&self, obs: usize) -> f64 {
         self.sqrt.as_deref().map_or(1.0, |s| s[obs] * s[obs])
     }
 
     /// `E_tᵀ w`: each level's weight `w_l`, summed in the pieces the term's reduction fixes.
-    pub(crate) fn level_weights(&self, term: TermIncidence<'_>) -> Vec<f64> {
+    pub(super) fn level_weights(&self, term: TermIncidence<'_>) -> Vec<f64> {
         let mut sums = vec![0.0; term.layout().n_levels()];
         match self.sqrt() {
             // A sum of ones is exact in any order.
@@ -100,18 +100,18 @@ impl RowWeights {
     }
 
     /// Some row weighs zero, so [`Self::unscale`] cannot recover it.
-    pub(crate) fn erases_rows(&self) -> bool {
+    pub(super) fn erases_rows(&self) -> bool {
         self.erases_rows
     }
 
     /// `W^{1/2} v`; `None` when unweighted, where `v` is its own image.
-    pub(crate) fn scaled(&self, v: &[f64]) -> Option<Vec<f64>> {
+    pub(super) fn scaled(&self, v: &[f64]) -> Option<Vec<f64>> {
         let s = self.sqrt.as_deref()?;
         Some(v.iter().zip(s).map(|(&vi, &si)| si * vi).collect())
     }
 
     /// Undo `W^{1/2}` on a weighted row vector.
-    pub(crate) fn unscale(&self, v: &mut [f64]) {
+    pub(super) fn unscale(&self, v: &mut [f64]) {
         if let Some(s) = &self.sqrt {
             debug_assert_eq!(v.len(), s.len());
             v.par_iter_mut()

@@ -285,14 +285,14 @@ across solves like any other.
 |---|---|---|
 | `within::config` | public | `LsmrOptions`, `PreconditionerConfig`, `LocalSolverConfig`, `SchurMode`, `ApproxCholConfig`, `ApproxSchurConfig`, `ScalingConfig` |
 | `within::error` | public | `WithinError`, `BuildError`, `SolveError` |
-| `block_solver` / `channel` / `domain` / `linalg` / `operator` / `solver` | `pub(crate)` | implementation layers — public items are re-exported at the crate root |
+| `design` / `system` / `precond` / `solver` / `linalg` | `pub(crate)` | implementation layers — public items are re-exported at the crate root |
 
 ## Project structure
 
 ```
 crates/
   schwarz-precond/   Generic domain decomposition library (traits, solvers, Schwarz preconditioners)
-  within/            Core fixed-effects solver (designs, domains, operators, solver)
+  within/            Core fixed-effects solver (design, system, precond, solver)
   within-py/         PyO3 bridge (cdylib → within._within)
 python/within/       Python package re-exporting the Rust extension
 benchmarks/          Python benchmark framework

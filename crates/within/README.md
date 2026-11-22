@@ -54,13 +54,13 @@ The crate is organized in four layers, each depending only on the ones above it:
 1. **`design`** — The weight-free design `D = E • X`. `Design` lowers
    `Effect`s (`Design::new`) or an observation-major category matrix
    (`Design::from_categories`) into the shared incidence `E` (per-term level
-   codes and coefficient layout) and each term's slope columns `X`, and
-   provides the products `D x` and `Dᵀ v` over its term blocks.
+   codes and coefficient layout) and each term's slope columns `X`.
 
 2. **`system`** — The least-squares system for one weighting `W`.
    `OrthogonalDesign` is `D̃ = D·R`, each term's slopes orthogonalized within
-   each level; `DesignOperator` is `A = sqrt(W) D̃`, the operator LSMR
-   iterates on; `Gramian` is `G = AᵀA`, which the preconditioners read.
+   each level, with the products `D̃ x` and `D̃ᵀ v` over its term blocks;
+   `DesignOperator` is `A = sqrt(W) D̃`, the operator LSMR iterates on;
+   `Gramian` is `G = AᵀA`, which the preconditioners read.
 
 3. **`precond`** — `M ≈ G⁻¹`: the diagonal and the additive Schwarz
    preconditioner, whose factor-pair subdomains (`build_local_domains`) wire

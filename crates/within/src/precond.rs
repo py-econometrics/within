@@ -1,8 +1,7 @@
-//! `M ≈ G⁻¹`: the diagonal and Schwarz preconditioners, read from `G`. Schwarz bridges FE types to the generic
-//! `schwarz-precond` API, plus the opaque public [`Preconditioner`] handle.
+//! `M ≈ G⁻¹`: the diagonal and Schwarz preconditioners, read from `G`, and the opaque public
+//! [`Preconditioner`] handle.
 
-use rayon::prelude::*;
-use schwarz_precond::{MemStack, Operator, SchwarzPreconditioner, StackReq, SubdomainEntry};
+use schwarz_precond::{MemStack, Operator, StackReq};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,30 +9,12 @@ use std::time::Duration;
 use crate::config::{PreconditionerConfig, Rung};
 use crate::system::Gramian;
 use crate::{BuildError, BuildWarning};
-use block_solver::BlockSolver;
+use schwarz::FeSchwarz;
 
-mod block_solver;
-mod factor_pairs;
 mod ladder;
-#[cfg(test)]
-mod tests;
+mod schwarz;
 
-pub(crate) use factor_pairs::{build_local_domains, LocalDomain};
 pub(crate) use ladder::{Current, Ladder};
-
-/// Concrete additive Schwarz type used in the parent crate.
-#[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct FeSchwarz {
-    inner: SchwarzPreconditioner<BlockSolver>,
-}
-
-impl std::fmt::Debug for FeSchwarz {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FeSchwarz")
-            .field("n_subdomains", &self.inner.subdomains().len())
-            .finish()
-    }
-}
 
 /// Diagonal/Jacobi preconditioner for the fixed-effects Gramian.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,25 +66,6 @@ impl Operator for DiagonalPreconditioner {
     }
 }
 
-/// `n_dofs` may exceed the span of subdomain indices; an uncovered column resolves to `0`.
-pub(crate) fn build_additive(
-    domains: Vec<LocalDomain>,
-    n_dofs: usize,
-) -> Result<FeSchwarz, BuildError> {
-    let entries = domains
-        .into_par_iter()
-        .map(build_entry)
-        .collect::<Result<Vec<_>, BuildError>>()?;
-    Ok(FeSchwarz {
-        inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs),
-    })
-}
-
-pub(crate) fn build_entry(domain: LocalDomain) -> Result<SubdomainEntry<BlockSolver>, BuildError> {
-    let LocalDomain { core, solver } = domain;
-    SubdomainEntry::try_new(core, solver).map_err(BuildError::Preconditioner)
-}
-
 /// A built map `M⁻¹` and the configuration whose ladder it is a rung of; cloning is O(1).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(try_from = "PreconditionerWire")]
@@ -134,7 +96,7 @@ impl Map {
     fn operator(&self) -> &dyn Operator {
         match self {
             Self::Diagonal(p) => p,
-            Self::Schwarz(p) => &p.inner,
+            Self::Schwarz(p) => p.operator(),
         }
     }
 }
@@ -265,12 +227,8 @@ fn build_map(
     Ok(match rung {
         Rung::Diagonal => (Some(Map::Diagonal(diagonal_map(gramian)?)), Vec::new()),
         Rung::Schwarz(schwarz) => {
-            let (domains, warnings) = build_local_domains(gramian, &schwarz.local_solver)?;
-            if domains.is_empty() {
-                return Ok((None, warnings));
-            }
-            let schwarz = build_additive(domains, gramian.unknowns().len())?;
-            (Some(Map::Schwarz(schwarz)), warnings)
+            let (schwarz, warnings) = schwarz::build(gramian, &schwarz.local_solver)?;
+            (schwarz.map(Map::Schwarz), warnings)
         }
     })
 }
