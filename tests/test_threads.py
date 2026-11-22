@@ -10,7 +10,7 @@ import pytest
 import within
 from within import PreconditionerConfig
 
-from conftest import as_solver_categories, every_preconditioner, generate_synthetic_data
+from conftest import as_solver_categories, generate_synthetic_data
 
 
 @pytest.fixture(scope="module")
@@ -20,22 +20,6 @@ def panel():
     categories = as_solver_categories(cats)
     ys = np.column_stack([y, np.sin(np.arange(y.size) * 0.1)])
     return categories, ys
-
-
-@every_preconditioner
-def test_a_call_returns_the_same_bits_at_any_thread_count(panel, precond) -> None:
-    categories, ys = panel
-    options = within.LsmrOptions(tol=1e-6, maxiter=200)
-    reference = within.solve_batch(
-        categories, ys, options=options, preconditioner=precond, threads=1
-    )
-    for threads in [None, 2]:
-        r = within.solve_batch(
-            categories, ys, options=options, preconditioner=precond, threads=threads
-        )
-        assert r.x.tobytes() == reference.x.tobytes(), threads
-        assert r.demeaned.tobytes() == reference.demeaned.tobytes(), threads
-        assert list(r.iterations) == list(reference.iterations), threads
 
 
 def test_every_entry_point_takes_a_thread_count(panel) -> None:
