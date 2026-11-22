@@ -17,6 +17,7 @@ use within::config::{
 };
 use within::{MemBuffer, MemStack, Preconditioner, PreconditionerInput, Schwarz};
 
+use crate::budget::ThreadBudget;
 use crate::convert::{value_err, IntoPyErr};
 
 #[pyclass(frozen, module = "within._within")]
@@ -422,11 +423,14 @@ impl From<Preconditioner> for PyPreconditioner {
 #[pymethods]
 impl PyPreconditioner {
     /// Apply the preconditioner: ``y = M⁻¹ x``.
+    #[pyo3(signature = (x, threads=None))]
     fn apply<'py>(
         &self,
         py: Python<'py>,
         x: PyReadonlyArray1<'py, f64>,
+        threads: Option<isize>,
     ) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+        let budget = ThreadBudget::new(threads)?;
         let x_slice = x
             .as_slice()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("x must be contiguous"))?;
@@ -439,18 +443,21 @@ impl PyPreconditioner {
         }
         let y = py
             .detach(|| {
-                let mut y = vec![0.0; self.inner.nrows()];
-                let Ok(mut kept) = self.stack.try_lock() else {
-                    return self.inner.apply(x_slice, &mut y).map(|()| y);
-                };
-                let req = self.inner.scratch();
-                let buffer = kept.get_or_insert_with(|| MemBuffer::new(req));
-                if !MemStack::new(buffer).can_hold(req) {
-                    *buffer = MemBuffer::new(req);
-                }
-                self.inner
-                    .apply_with(x_slice, &mut y, MemStack::new(buffer))
-                    .map(|()| y)
+                budget.run(|| {
+                    let mut y = vec![0.0; self.inner.nrows()];
+                    let Ok(mut kept) = self.stack.try_lock() else {
+                        return self.inner.apply(x_slice, &mut y).map(|()| y);
+                    };
+                    // Schwarz sizes its scratch for the pool it runs on.
+                    let req = self.inner.scratch();
+                    let buffer = kept.get_or_insert_with(|| MemBuffer::new(req));
+                    if !MemStack::new(buffer).can_hold(req) {
+                        *buffer = MemBuffer::new(req);
+                    }
+                    self.inner
+                        .apply_with(x_slice, &mut y, MemStack::new(buffer))
+                        .map(|()| y)
+                })
             })
             .map_err(IntoPyErr::into_py_err)?;
         Ok(numpy::PyArray1::from_vec(py, y))
