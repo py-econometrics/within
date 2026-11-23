@@ -118,7 +118,7 @@ fn two_level(prepared: &PreparedDesign<'_>) -> Result<TwoLevelMap, CoarseDecline
     let RungBuild {
         map: Some(RungMap::Schwarz(one_level)),
         ..
-    } = build_schwarz(prepared, &LocalSolverConfig::default()).expect("schwarz")
+    } = build_schwarz(prepared, &LocalSolverConfig::default(), false).expect("schwarz")
     else {
         panic!("no one-level map");
     };

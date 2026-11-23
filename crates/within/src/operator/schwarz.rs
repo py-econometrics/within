@@ -262,8 +262,10 @@ pub(crate) fn diagonal_map(mut diag: Vec<f64>) -> Result<DiagonalPreconditioner,
 pub(crate) fn build_schwarz(
     prepared: &PreparedDesign<'_>,
     local_solver: &LocalSolverConfig,
+    term_blocks: bool,
 ) -> Result<RungBuild, BuildError> {
-    let (domains, warnings) = crate::domain::build_local_domains(prepared, local_solver)?;
+    let (domains, warnings) =
+        crate::domain::build_local_domains(prepared, local_solver, term_blocks)?;
     let map = if domains.is_empty() {
         None
     } else {

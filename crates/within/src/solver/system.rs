@@ -28,7 +28,16 @@ pub(crate) fn offer<'s>(
         // Schwarz subdomains are factor pairs; one factor's normal matrix is diagonal.
         RungSettings::Schwarz(_) if prepared.design.n_factors() < 2 => None,
         RungSettings::Schwarz(schwarz) => Some(Box::new(move || {
-            build_schwarz(prepared, &schwarz.local_solver)
+            build_schwarz(
+                prepared,
+                &schwarz.local_solver,
+                std::env::var_os("ZZ_TB").is_some(),
+            )
+        })),
+        // ZZ prototype: with two terms the term blocks are Schwarz itself.
+        RungSettings::TermBlocks { .. } if prepared.design.n_factors() < 3 => None,
+        RungSettings::TermBlocks { schwarz, .. } => Some(Box::new(move || {
+            build_schwarz(prepared, &schwarz.local_solver, true)
         })),
         RungSettings::TwoLevel(coarse) => {
             let Some(RungMap::Schwarz(one_level)) = below else {

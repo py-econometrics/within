@@ -28,7 +28,7 @@ pub(super) struct PrecondSlot {
 /// The map a solve runs on now, where it stands among the rungs, and the stall that hands it
 /// to a rung still to be built.
 pub(super) struct Running<'s> {
-    at: Option<usize>,
+    pub(super) at: Option<usize>,
     pub(super) map: Option<&'s Preconditioner>,
     pub(super) stall: Option<&'s Staleness>,
 }

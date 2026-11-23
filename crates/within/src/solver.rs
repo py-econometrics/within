@@ -353,6 +353,17 @@ fn solve_all(
         let running = slot.running(system)?;
         let stall = running.stall.map(|stall| stall as &dyn EscalationPolicy);
         passes = rung(system, passes, running.map, stall, lsmr)?;
+        if std::env::var_os("ZZ_TRACE").is_some() {
+            for p in &passes {
+                match p {
+                    Pass::Stalled { probe, .. } => {
+                        eprintln!("ZZ stall rung={:?} it={}", running.at, probe.iterations)
+                    }
+                    Pass::Done(s) => eprintln!("ZZ done rung={:?} it={}", running.at, s.iterations),
+                    _ => {}
+                }
+            }
+        }
         if !passes.iter().any(|p| matches!(p, Pass::Stalled { .. })) {
             break;
         }

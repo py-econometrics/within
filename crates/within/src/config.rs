@@ -188,8 +188,15 @@ impl PreconditionerConfig {
             ),
         };
         let two_level = schwarz.and_then(|s| s.coarse.as_ref());
+        let term_blocks = match self {
+            Self::Adaptive { stall, schwarz } if std::env::var_os("ZZ_TB_RUNG").is_some() => {
+                Some(RungSettings::TermBlocks { schwarz, stall })
+            }
+            _ => None,
+        };
         diagonal
             .into_iter()
+            .chain(term_blocks)
             .chain(schwarz.map(RungSettings::Schwarz))
             .chain(two_level.map(RungSettings::TwoLevel))
     }
@@ -276,6 +283,11 @@ pub(crate) enum RungSettings<'c> {
     },
     Schwarz(&'c Schwarz),
     TwoLevel(&'c CoarseCorrection),
+    /// ZZ prototype: Schwarz over the eliminated-term pairs only.
+    TermBlocks {
+        schwarz: &'c Schwarz,
+        stall: &'c Staleness,
+    },
 }
 
 /// When a rung hands the solve to the next one.
@@ -290,7 +302,7 @@ impl<'c> RungSettings<'c> {
     pub(crate) fn rung(&self) -> Rung {
         match self {
             Self::Diagonal { .. } => Rung::Diagonal,
-            Self::Schwarz(_) => Rung::Schwarz,
+            Self::Schwarz(_) | Self::TermBlocks { .. } => Rung::Schwarz,
             Self::TwoLevel(_) => Rung::TwoLevel,
         }
     }
@@ -304,6 +316,7 @@ impl<'c> RungSettings<'c> {
                 CoarseBuild::OnStall(stall) => Some(Handoff::OnStall(stall)),
             },
             Self::TwoLevel(_) => None,
+            Self::TermBlocks { stall, .. } => Some(Handoff::OnStall(stall)),
         }
     }
 }
