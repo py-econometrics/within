@@ -699,3 +699,21 @@ fn the_stack_holds_each_local_solve_at_the_budget_this_pool_gives_it(
         assert!(z.iter().all(|&v| v == 1.0));
     });
 }
+
+/// A stack sized by `scratch()` in one pool must serve an apply in another.
+#[test]
+fn a_stack_sized_in_one_pool_serves_an_apply_in_another() {
+    let entries = vec![make_entry(
+        SubdomainCore::uniform(vec![0]),
+        ByBudget { work: 1 },
+    )];
+    let schwarz = SchwarzPreconditioner::new(entries);
+    let req = in_pool(1, || schwarz.scratch());
+    let mut buffer = schwarz_precond::MemBuffer::new(req);
+    let mut z = vec![0.0; 1];
+    in_pool(4, || {
+        schwarz.apply_with(&[2.0], &mut z, MemStack::new(&mut buffer))
+    })
+    .expect("apply");
+    assert_eq!(z, [1.0]);
+}

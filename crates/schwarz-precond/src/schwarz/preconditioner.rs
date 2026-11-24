@@ -189,7 +189,7 @@ impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
     }
 
     /// The stacked local outputs, then every local solve's workspace at the budget this pool
-    /// gives it; an apply in another pool may need more.
+    /// gives it; a stack sized in any pool serves, a smaller one runs each local solve alone.
     fn scratch(&self) -> StackReq {
         let (_, workspaces) = self.local_budget();
         StackReq::new::<f64>(self.n_slots()).and(workspaces.scratch())
@@ -199,8 +199,14 @@ impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
     fn apply_with(&self, r: &[f64], z: &mut [f64], stack: &mut MemStack) -> Result<(), SolveError> {
         self.check_len("r", r.len())?;
         self.check_len("z", z.len())?;
-        let (threads, workspaces) = self.local_budget();
         let (mut outputs, stack) = stack.make_with(self.n_slots(), |_| 0.0);
+        // A stack sized in a smaller pool runs each local solve alone.
+        let (threads, workspaces) = match self.local_budget() {
+            (_, workspaces) if !stack.can_hold(workspaces.scratch()) => {
+                (Self::LOCAL_BUDGETS[1], &self.workspaces[1])
+            }
+            budget => budget,
+        };
         let parts = (
             Pieces::new(&mut outputs, &self.slot_starts),
             workspaces.carve(stack),

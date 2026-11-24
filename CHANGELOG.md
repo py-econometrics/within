@@ -17,6 +17,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - **BREAKING:** Python 3.9 is no longer supported; wheels are `cp310-abi3`.
+- A Schwarz apply on a stack sized in a smaller Rayon pool runs each local solve on one thread instead of panicking.
 - **BREAKING:** the hidden `Design::new_unsorted` is removed: every design sorts its rows by its dominant term. Designs above `u32::MAX` rows are sorted too, and their unsorted terms split their scatter by level like smaller ones; row indices are 4 bytes while every row fits `u32`.
 - A `Design` fixes each term's scatter split once: solvers built from one design under different weights (IRLS) no longer re-sort its unsorted terms.
 - `CoefficientLayout` equality also compares which of a term's columns is the intercept.
