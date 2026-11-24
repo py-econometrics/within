@@ -255,21 +255,27 @@ fn surplus_component_sampled_matches_exact_reduction() {
     }
 }
 
-/// Regression for #98: under additive Schwarz, a
-/// level observed exactly once in a slope-carrying term that is not the first
-/// term used to crash LSMR with a preconditioner one column short of the
-/// operator. That singleton-slope direction is unidentified — a structural-zero
-/// operator column no subdomain covers — yet it must still count toward the
-/// preconditioner's shape. The solve must succeed and land the same identified
-/// fit the `Off`/`Diagonal` preconditioners already produce.
-#[test]
-fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
-    // The firm-slope level-2 column is last, so an omitted one shows up as a shape mismatch.
-    let worker = [0u32, 0, 1, 1, 2, 2];
-    let firm = [2u32, 0, 0, 1, 1, 0];
-    let x = [0.5, -1.0, 0.3, 2.0, -0.7, 1.1];
-    let y = [1.0, 2.0, 3.0, 1.5, 0.4, -0.2];
-
+/// Regression for #98: under additive Schwarz, a level observed exactly once in a slope-carrying
+/// term that is not the first used to crash LSMR with a preconditioner one column short of the
+/// operator. That singleton-slope direction is unidentified, yet it must still count toward the
+/// map's shape, whether its term is eliminated or kept. The solve must succeed and land the same
+/// identified fit the `Off`/`Diagonal` preconditioners produce.
+#[rstest]
+// The firm term has the most coefficients, so it is eliminated: the map acts on the worker's 3.
+#[case::eliminated(vec![0, 0, 1, 1, 2, 2], vec![2, 0, 0, 1, 1, 0], 3)]
+// Seven workers outnumber the firm's 6 coefficients: the firm is kept, its singleton slope last.
+#[case::kept(vec![0, 1, 2, 3, 4, 5, 6, 0], vec![0, 0, 1, 1, 0, 1, 0, 2], 6)]
+fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz(
+    #[case] worker: Vec<u32>,
+    #[case] firm: Vec<u32>,
+    #[case] kept: usize,
+) {
+    let x: Vec<f64> = (0..worker.len())
+        .map(|i| (i as f64 * 0.7).sin() + 0.1)
+        .collect();
+    let y: Vec<f64> = (0..worker.len())
+        .map(|i| (i as f64 * 0.31 + 1.0).cos())
+        .collect();
     let effects = || {
         vec![
             Effect::new(&worker[..], true, []).expect("plain effect"),
@@ -279,10 +285,9 @@ fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
 
     let solver = Solver::new(effects(), None, additive()).expect("Schwarz preconditioner builds");
 
-    // The preconditioner must match the operator's column count, uncovered ones included.
+    // The map matches the operator's column count, uncovered ones included.
     let precond = solver.preconditioner().expect("has a preconditioner");
-    assert_eq!(precond.ncols(), solver.n_dofs());
-    assert_eq!(precond.nrows(), solver.n_dofs());
+    assert_eq!((precond.nrows(), precond.ncols()), (kept, kept));
 
     let r = solver
         .solve(&y, &LsmrOptions::default())
@@ -310,7 +315,7 @@ fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
         }
     }
 
-    // A dropped n_dofs would trip Solver::new's dimension check after the round-trip.
+    // A dropped column would trip Solver::new's dimension check after the round-trip.
     let bytes = postcard::to_stdvec(precond).expect("serialize");
     let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
     let reused = Solver::new(effects(), None, restored)

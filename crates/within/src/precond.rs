@@ -1,5 +1,5 @@
-//! `M ≈ G⁻¹`: the diagonal and Schwarz preconditioners, read from `G`, and the opaque public
-//! [`Preconditioner`] handle.
+//! `M ≈ S⁻¹`: the diagonal and Schwarz preconditioners, read from `diag(S)` and `G`'s pair
+//! factors, and the opaque public [`Preconditioner`] handle.
 
 use schwarz_precond::{MemStack, Operator, StackReq};
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ mod schwarz;
 
 pub(crate) use ladder::{Current, Ladder};
 
-/// Diagonal/Jacobi preconditioner for the fixed-effects Gramian.
+/// Jacobi preconditioner on `diag(S)`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct DiagonalPreconditioner {
     inv_diag: Arc<[f64]>,
@@ -86,11 +86,11 @@ enum Map {
 }
 
 impl Rung<'_> {
-    /// Whether this rung can act on the system: Schwarz needs a channel pair, hence two terms.
+    /// Whether this rung can act on the system: Schwarz needs a pair block.
     fn offers(&self, gramian: Gramian<'_>) -> bool {
         match self {
             Self::Diagonal => true,
-            Self::Schwarz(_) => gramian.layout().n_terms() >= 2,
+            Self::Schwarz(_) => gramian.has_pair_blocks(),
         }
     }
 

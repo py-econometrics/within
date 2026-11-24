@@ -12,7 +12,7 @@ use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::design::{CoefficientAddress, CoefficientLayout};
 use crate::design::{Design, Effect};
 use crate::precond::Preconditioner;
-use crate::system::{Fit, Gramian, OrthogonalDesign, SystemMatrix};
+use crate::system::{Fit, Gramian, ReducedDesign, SystemMatrix};
 use crate::{BuildError, BuildWarning, WithinError};
 
 #[cfg(test)]
@@ -130,7 +130,8 @@ pub struct SolveResult {
     pub converged: bool,
     /// Number of LSMR iterations used (summed across both rungs when escalated).
     pub iterations: usize,
-    /// Relative normal-equation residual `||D^T W (y - Dx)|| / ||D^T W y||`,
+    /// Relative normal-equation residual `||A_r^T r|| / ||A_r^T b||` of the system LSMR
+    /// iterates on, the largest term partialled out (see the glossary's system matrix),
     /// estimated from the LSMR recurrence (Fong & Saunders) at no extra cost.
     /// Exact for an unpreconditioned solve; for a preconditioned solve it is
     /// measured in the preconditioner's metric and typically sits a modest
@@ -204,8 +205,8 @@ impl BatchSolveResult {
 /// (`Cow`); a solver that outlives its inputs — e.g. one returned across the
 /// Python boundary — uses owned columns.
 pub struct Solver<'a> {
-    /// `D̃ = D·R` for this solver's weights.
-    design: OrthogonalDesign<'a>,
+    /// `D̃ = D·R` for this solver's weights, `e` eliminated.
+    design: ReducedDesign<'a>,
     ladder: Ladder,
 }
 
@@ -328,8 +329,9 @@ impl<'a> Solver<'a> {
         weights: Option<&[f64]>,
         preconditioner: impl Into<PreconditionerInput>,
     ) -> Result<Self, BuildError> {
-        // Orthogonalize the slope columns (if any) before the preconditioner reads them.
-        let design = design.into_design()?.orthogonalize(weights)?;
+        // Orthogonalize the slope columns (if any) and eliminate `e` before the preconditioner
+        // reads them.
+        let design = design.into_design()?.reduce(weights)?;
         let gramian = Gramian::new(&design);
         let ladder = match preconditioner.into() {
             PreconditionerInput::Default => Ladder::new(gramian, PreconditionerConfig::default())?,

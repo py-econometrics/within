@@ -6,156 +6,216 @@ fn noise(seed: usize) -> f64 {
     (z >> 11) as f64 / (1u64 << 52) as f64 - 1.0
 }
 
+/// Dense `A_r = (I − P_e) W^{1/2} D̃_k`, one column per unknown: each kept column with its
+/// projection onto each eliminated level's columns removed, from the data alone, with each kept
+/// column's norm `‖a_j‖²` before. `e`'s columns are `W`-orthogonal within a level, so projecting one
+/// at a time is `P_e`.
+fn dense_reduced(design: &crate::system::ReducedDesign<'_>) -> (Vec<Vec<f64>>, Vec<f64>) {
+    let n = design.n_obs();
+    let s = |i: usize| design.split.weights.sqrt().map_or(1.0, |s| s[i]);
+    let mut columns = vec![vec![0.0; n]; design.unknowns().len()];
+    for (channel, at) in design.unknowns().channels(design.layout()) {
+        let t = design.split.term(channel.term);
+        let z = t.loading(channel.column);
+        for (i, &level) in t.levels().iter().enumerate() {
+            columns[at.start + level as usize][i] = s(i) * z.map_or(1.0, |z| z[i]);
+        }
+    }
+    let own = columns
+        .iter()
+        .map(|c| c.iter().map(|a| a * a).sum())
+        .collect();
+    let (e, segments) = (
+        design.split.term(design.split.eliminated()),
+        design.incidence().segments(),
+    );
+    for column in &mut columns {
+        for level in 0..segments.n_levels() {
+            let rows = segments.rows(level);
+            for c in 0..e.layout().n_columns() {
+                let z = e.loading(c);
+                let a: Vec<f64> = rows
+                    .clone()
+                    .map(|i| s(i) * z.map_or(1.0, |z| z[i]))
+                    .collect();
+                let g: f64 = a.iter().map(|a| a * a).sum();
+                if g == 0.0 {
+                    continue;
+                }
+                let p = a
+                    .iter()
+                    .zip(&column[rows.clone()])
+                    .map(|(a, v)| a * v)
+                    .sum::<f64>()
+                    / g;
+                for (v, a) in column[rows.clone()].iter_mut().zip(&a) {
+                    *v -= p * a;
+                }
+            }
+        }
+    }
+    (columns, own)
+}
+
+/// `A_r x`, `A_rᵀ r` and `diag(S)` against [`dense_reduced`]; the adjoint is 0 on absorbed columns.
+fn assert_matches_dense(design: &crate::system::ReducedDesign<'_>) {
+    use crate::system::SystemMatrix;
+    use schwarz_precond::Operator;
+    let (columns, own) = dense_reduced(design);
+    let norms: Vec<f64> = columns
+        .iter()
+        .map(|c| c.iter().map(|a| a * a).sum())
+        .collect();
+    // An absorbed column's dense energy is within rounding of its own norm, not the largest one.
+    for ((&norm, &own), &energy) in norms.iter().zip(&own).zip(design.diag_s.values()) {
+        let tolerance = 1e-10 * if energy == 0.0 { own } else { norm };
+        assert!(
+            (energy - norm).abs() <= tolerance,
+            "diag(S) {energy} vs {norm}"
+        );
+    }
+    let (n, n_kept) = (design.n_obs(), design.unknowns().len());
+    let close = |got: &[f64], expect: &[f64]| {
+        let scale = expect.iter().fold(1.0f64, |m, v| m.max(v.abs()));
+        for (g, e) in got.iter().zip(expect) {
+            assert!((g - e).abs() <= 1e-10 * scale, "{g} vs {e}");
+        }
+    };
+    let x: Vec<f64> = (0..n_kept).map(|j| noise(7_000 + j)).collect();
+    let mut got = vec![0.0; n];
+    SystemMatrix::new(design).apply(&x, &mut got).unwrap();
+    let mut expect = vec![0.0; n];
+    for (column, &xj) in columns.iter().zip(&x) {
+        for (e, a) in expect.iter_mut().zip(column) {
+            *e += a * xj;
+        }
+    }
+    close(&got, &expect);
+
+    let r: Vec<f64> = (0..n).map(|i| noise(9_000 + i)).collect();
+    let mut got = vec![0.0; n_kept];
+    SystemMatrix::new(design)
+        .apply_adjoint(&r, &mut got)
+        .unwrap();
+    let expect: Vec<f64> = columns
+        .iter()
+        .zip(design.diag_s.values())
+        .map(|(column, &energy)| {
+            let dot: f64 = column.iter().zip(&r).map(|(a, r)| a * r).sum();
+            if energy == 0.0 {
+                0.0
+            } else {
+                dot
+            }
+        })
+        .collect();
+    close(&got, &expect);
+}
+
 mod design_tests {
+    use super::assert_matches_dense;
     use crate::design::Design;
-    use crate::system::OrthogonalDesign;
     use crate::system::SystemMatrix;
     use schwarz_precond::Operator;
 
-    fn make_test_design() -> OrthogonalDesign<'static> {
-        // Sorted on the dominant factor, so construction applies no locality permutation.
-        Design::from_levels_for_test(vec![vec![0, 1, 1, 2, 0], vec![0, 0, 1, 2, 3]])
-            .orthogonalize(None)
-            .unwrap()
-    }
-
     #[test]
-    fn test_apply_unweighted_values() {
-        let design = make_test_design();
-        let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
-        let mut y = vec![0.0; 5];
-        SystemMatrix::new(&design)
-            .apply(&x, &mut y)
-            .expect("apply succeeds");
-        assert_eq!(y, vec![11.0, 12.0, 22.0, 33.0, 41.0]);
+    fn two_factors_match_the_dense_reduced_matrix() {
+        let design = Design::from_levels_for_test(vec![vec![0, 1, 1, 2, 0], vec![0, 0, 1, 2, 3]])
+            .reduce(None)
+            .unwrap();
+        assert_eq!(design.unknowns().len(), 3);
+        assert_matches_dense(&design);
     }
 
+    /// One term leaves nothing to solve for: `A_r` has no columns.
     #[test]
-    fn test_apply_adjoint_unweighted_values() {
-        let design = make_test_design();
-        let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let mut x = vec![0.0; 7];
+    fn a_single_factor_leaves_no_unknowns() {
+        let design = Design::from_levels_for_test(vec![vec![0u32, 0, 1, 1, 2]])
+            .reduce(None)
+            .unwrap();
+        assert_eq!(design.unknowns().len(), 0);
+        let mut y = vec![1.0; 5];
+        SystemMatrix::new(&design).apply(&[], &mut y).unwrap();
+        assert_eq!(y, [0.0; 5]);
         SystemMatrix::new(&design)
-            .apply_adjoint(&r, &mut x)
-            .expect("apply_adjoint succeeds");
-        assert_eq!(x, vec![6.0, 5.0, 4.0, 3.0, 3.0, 4.0, 5.0]);
+            .apply_adjoint(&[1.0; 5], &mut [])
+            .unwrap();
     }
 
-    fn make_single_factor_design() -> OrthogonalDesign<'static> {
-        // Sorted: a single-factor store is always dominated by its only factor.
-        Design::from_levels_for_test(vec![vec![0u32, 0, 1, 1, 2]])
-            .orthogonalize(None)
-            .unwrap()
-    }
-
-    fn make_large_design() -> OrthogonalDesign<'static> {
-        // Sorted on both factors, so there is no construction-time permutation.
-        let n_obs = 15_000;
-        let block = 300u32;
-        let fa: Vec<u32> = (0..n_obs).map(|i| i as u32 / block).collect();
-        let fb = fa.clone();
-        Design::from_levels_for_test(vec![fa, fb])
-            .orthogonalize(None)
-            .unwrap()
-    }
-
+    /// A kept factor equal to the eliminated one is absorbed whole: `A_r = 0`, `diag(S) = 0`.
     #[test]
-    fn test_large_design_matvec_correctness() {
-        let design = make_large_design();
-
-        let mut ej = vec![0.0f64; design.unknowns().len()];
-        ej[0] = 1.0;
-        let mut y = vec![0.0f64; design.n_obs()];
-        SystemMatrix::new(&design)
-            .apply(&ej, &mut y)
-            .expect("apply succeeds");
-
-        for (i, &yi) in y.iter().enumerate() {
-            let expected = if i < 300 { 1.0 } else { 0.0 };
-            assert_eq!(
-                yi, expected,
-                "D·e_0 at row {i}: expected {expected}, got {yi}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_large_design_apply_adjoint_correctness() {
-        let design = make_large_design();
-
-        let ones = vec![1.0f64; design.n_obs()];
-        let mut x = vec![0.0f64; design.unknowns().len()];
-        SystemMatrix::new(&design)
-            .apply_adjoint(&ones, &mut x)
-            .expect("apply_adjoint succeeds");
-
-        let expected_count = (design.n_obs() / 50) as f64;
-        for (j, &xj) in x.iter().enumerate() {
-            assert!(
-                (xj - expected_count).abs() < 1e-10,
-                "D^T·1 at DOF {j}: expected {expected_count}, got {xj}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_single_factor_apply_values() {
-        let design = make_single_factor_design();
-        let x = vec![10.0, 20.0, 30.0];
-        let mut y = vec![0.0f64; 5];
-        SystemMatrix::new(&design)
-            .apply(&x, &mut y)
-            .expect("apply succeeds");
-        assert_eq!(y, vec![10.0, 10.0, 20.0, 20.0, 30.0]);
-    }
-
-    #[test]
-    fn test_single_factor_apply_adjoint_values() {
-        let design = make_single_factor_design();
-        let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let mut x = vec![0.0f64; 3];
-        SystemMatrix::new(&design)
-            .apply_adjoint(&r, &mut x)
-            .expect("apply_adjoint succeeds");
-        assert_eq!(x, vec![3.0, 7.0, 5.0]);
+    fn a_kept_copy_of_the_eliminated_factor_is_absorbed() {
+        let fa: Vec<u32> = (0..15_000).map(|i| i / 300).collect();
+        let design = Design::from_levels_for_test(vec![fa.clone(), fa])
+            .reduce(None)
+            .unwrap();
+        assert!(design.diag_s.values().iter().all(|&e| e == 0.0));
+        assert_matches_dense(&design);
     }
 }
 
 mod slope_design_tests {
-    use super::noise;
-    use crate::design::{Channel, Design, Effect, LevelReduction};
-    use crate::system::OrthogonalDesign;
+    use super::{assert_matches_dense, noise};
+    use crate::design::{Design, Effect};
+    use crate::system::ReducedDesign;
     use crate::system::SystemMatrix;
     use schwarz_precond::Operator;
 
-    /// Dense design matrix from the design's internal (post-sort) columns —
-    /// the reference the operator must agree with regardless of the locality
-    /// permutation.
-    fn dense_matrix(design: &OrthogonalDesign<'_>) -> Vec<Vec<f64>> {
-        let mut d = vec![vec![0.0; design.unknowns().len()]; design.n_obs()];
-        for (term, t) in design.terms().enumerate() {
-            for c in 0..t.layout().n_columns() {
-                let channel = Channel { term, column: c };
-                let base = design.unknowns().dofs(design.layout(), channel).start;
-                let z = t.loading(c);
-                for (i, &lev) in t.levels().iter().enumerate() {
-                    d[i][base + lev as usize] = z.map_or(1.0, |z| z[i]);
+    /// Every kept shape `with_split` fuses, and the dynamic ones, each with a fused and a dynamic
+    /// eliminated term, weighted and not.
+    #[test]
+    fn every_fused_shape_matches_the_dense_reduced_matrix() {
+        let n = 60;
+        let e: Vec<u32> = (0..n).map(|i| (i / 4) as u32).collect();
+        let f: Vec<u32> = (0..n).map(|i| ((i * 7) % 5) as u32).collect();
+        let g: Vec<u32> = (0..n).map(|i| ((i * 11) % 3) as u32).collect();
+        let h: Vec<u32> = (0..n).map(|i| ((i * 13) % 4) as u32).collect();
+        let z: Vec<Vec<f64>> = (0..8)
+            .map(|k| (0..n).map(|i| noise(k * 1_000 + i)).collect())
+            .collect();
+        let weights: Vec<f64> = (0..n).map(|i| 0.5 + noise(77 + i).abs()).collect();
+        let slopes = |k: usize| z[..k].iter().map(|z| &z[..]);
+        let kept_sets: Vec<Vec<Effect<'_>>> = vec![
+            vec![Effect::new(&f, true, []).unwrap()],
+            vec![Effect::new(&f, true, [&z[4][..]]).unwrap()],
+            vec![
+                Effect::new(&f, true, []).unwrap(),
+                Effect::new(&g, true, []).unwrap(),
+            ],
+            vec![
+                Effect::new(&f, true, [&z[4][..]]).unwrap(),
+                Effect::new(&g, true, []).unwrap(),
+            ],
+            vec![
+                Effect::new(&f, true, []).unwrap(),
+                Effect::new(&g, true, [&z[5][..]]).unwrap(),
+            ],
+            vec![
+                Effect::new(&f, true, [&z[4][..]]).unwrap(),
+                Effect::new(&g, true, [&z[5][..]]).unwrap(),
+            ],
+            vec![Effect::new(&f, false, [&z[4][..]]).unwrap()],
+            vec![
+                Effect::new(&f, true, []).unwrap(),
+                Effect::new(&g, true, []).unwrap(),
+                Effect::new(&h, true, [&z[6][..]]).unwrap(),
+            ],
+        ];
+        for kept in kept_sets {
+            // One slope fuses `e`; four leave it dynamic.
+            for n_slopes in [1, 4] {
+                for weights in [None, Some(&weights[..])] {
+                    let mut effects = vec![Effect::new(&e, true, slopes(n_slopes)).unwrap()];
+                    effects.extend(kept.iter().cloned());
+                    let design = Design::new(effects).unwrap().reduce(weights).unwrap();
+                    assert_eq!(design.split.eliminated(), 0, "the fixture eliminates `e`");
+                    assert_matches_dense(&design);
                 }
             }
         }
-        d
     }
 
-    fn assert_close(a: &[f64], b: &[f64]) {
-        for (x, y) in a.iter().zip(b) {
-            assert!(
-                (x - y).abs() <= 1e-10 * x.abs().max(y.abs()).max(1.0),
-                "{x} vs {y}"
-            );
-        }
-    }
-
-    /// Every kernel arm on the sequential path, against the dense reference.
+    /// Many terms and slopes of every width, against the dense reference.
     #[test]
     fn slope_matvec_and_adjoint_match_dense_reference() {
         let n = 12;
@@ -178,40 +238,41 @@ mod slope_design_tests {
             Effect::new(&f1, false, [&zs[8][..], &zs[9][..], &zs[10][..]]).unwrap(),
             Effect::new(&f5, true, zs[11..15].iter().map(|z| &z[..])).unwrap(),
         ];
-        let design = Design::new(effects).unwrap().orthogonalize(None).unwrap();
-        let dense = dense_matrix(&design);
-        assert!(
-            (0..design.unknowns().len()).all(|j| dense.iter().any(|row| row[j] != 0.0)),
-            "orthogonalization zeroed a column; the arm's addressing would go untested"
-        );
-
-        let x: Vec<f64> = (0..design.unknowns().len())
-            .map(|j| noise(7_000 + j))
-            .collect();
-        let mut got = vec![0.0; design.n_obs()];
-        SystemMatrix::new(&design).apply(&x, &mut got).unwrap();
-        let expect: Vec<f64> = dense
-            .iter()
-            .map(|row| row.iter().zip(&x).map(|(d, xj)| d * xj).sum())
-            .collect();
-        assert_close(&got, &expect);
-
-        let r: Vec<f64> = (0..design.n_obs()).map(|i| noise(9_000 + i)).collect();
-        let mut got_t = vec![0.0; design.unknowns().len()];
-        SystemMatrix::new(&design)
-            .apply_adjoint(&r, &mut got_t)
-            .unwrap();
-        let mut expect_t = vec![0.0; design.unknowns().len()];
-        for (row, &ri) in dense.iter().zip(&r) {
-            for (e, d) in expect_t.iter_mut().zip(row) {
-                *e += d * ri;
-            }
-        }
-        assert_close(&got_t, &expect_t);
+        let design = Design::new(effects).unwrap().reduce(None).unwrap();
+        assert_matches_dense(&design);
     }
 
-    /// By-level (sorted or indexed) and by-row terms per fused arity; levels over many leaves.
-    fn level_reduction_design() -> OrthogonalDesign<'static> {
+    /// Kept slopes that `e`'s slopes span are absorbed on long levels, under heavy-tailed weights:
+    /// their cancellation stays below the `rows·ε` cutoff.
+    #[test]
+    fn kept_slopes_in_the_eliminated_span_are_absorbed_on_long_levels() {
+        let n: usize = 300_000;
+        let levels: Vec<u32> = (0..n).map(|i| (i / 100_000) as u32).collect();
+        let z: Vec<Vec<f64>> = [1e3, 0.0]
+            .iter()
+            .enumerate()
+            .map(|(k, mean)| (0..n).map(|i| mean + noise(k * n + i)).collect())
+            .collect();
+        let spanned: Vec<Vec<f64>> = [[3.0, 1.37, 0.4], [-2.0, 0.6, 1.74]]
+            .iter()
+            .map(|[a, b, c]| (0..n).map(|i| a + b * z[0][i] + c * z[1][i]).collect())
+            .collect();
+        let weights: Vec<f64> = (0..n).map(|i| (6.0 * noise(2 * n + i)).exp()).collect();
+        let effects = vec![
+            Effect::new(&levels, true, spanned.iter().map(|z| &z[..])).unwrap(),
+            Effect::new(&levels, true, z.iter().map(|z| &z[..])).unwrap(),
+        ];
+        let design = Design::new(effects)
+            .unwrap()
+            .reduce(Some(&weights))
+            .unwrap();
+        assert_eq!(design.split.eliminated(), 1, "the fixture eliminates `e`");
+        assert!(design.diag_s.values().iter().all(|&e| e == 0.0));
+        assert_matches_dense(&design);
+    }
+
+    /// Many terms, slopes of every width and collinear copies, over many tasks and leaves.
+    fn level_reduction_design() -> ReducedDesign<'static> {
         let n: usize = 300_000;
         // Largest term and already sorted, so the locality sort leaves every fixture as built.
         let sorted: Vec<u32> = (0..n).map(|i| (i * 160_000 / n) as u32).collect();
@@ -245,7 +306,7 @@ mod slope_design_tests {
         Design::new(effects)
             .unwrap()
             .into_owned()
-            .orthogonalize(Some(&weights))
+            .reduce(Some(&weights))
             .unwrap()
     }
 
@@ -263,26 +324,11 @@ mod slope_design_tests {
         });
     }
 
-    /// ⟨Dx, r⟩ = ⟨x, Dᵀr⟩, weighted, with each adjoint sum on each fused arity.
+    /// ⟨A_r x, r⟩ = ⟨x, A_rᵀ r⟩, weighted, over many leaves.
     #[test]
     fn slope_adjoint_property_each_level_reduction() {
         let design = level_reduction_design();
         let n = design.n_obs();
-
-        // By level unless unsorted with at least 12 rows per level.
-        let by_level = [
-            true, true, true, false, true, true, false, true, true, false, false,
-        ];
-        for (t, by_level) in design.terms().zip(by_level) {
-            assert_eq!(
-                matches!(t.incidence().reduction(), LevelReduction::Segments(..)),
-                by_level
-            );
-        }
-        assert!(matches!(
-            design.incidence().order().permute_in(&[0.0; 300_000]),
-            std::borrow::Cow::Borrowed(_)
-        ));
 
         let x: Vec<f64> = (0..design.unknowns().len())
             .map(|j| noise(13 * j + 1))
@@ -334,7 +380,7 @@ mod weighted_adjoint_proptests {
                 .collect();
 
             let design = crate::design::Design::from_levels_for_test(vec![fa, fb]);
-            let design = design.orthogonalize(Some(&weights)).unwrap();
+            let design = design.reduce(Some(&weights)).unwrap();
 
             let n_dofs = design.unknowns().len();
             let n_rows = design.n_obs();

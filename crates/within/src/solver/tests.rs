@@ -4,7 +4,7 @@ use super::CoefficientAddress;
 use crate::config::{LocalSolverConfig, LsmrOptions};
 use crate::design::Channel;
 use crate::design::Design;
-use crate::system::OrthogonalDesign;
+use crate::system::ReducedDesign;
 use crate::{Effect, PreconditionerConfig, Solver};
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
@@ -56,7 +56,7 @@ fn coefficient_layout_translates_addresses_both_ways() {
         Effect::new(&g, true, [&z[..]]).expect("slope effect"),
     ])
     .expect("design");
-    let layout = design.orthogonalize(None).unwrap().layout().clone();
+    let layout = design.reduce(None).unwrap().layout().clone();
 
     assert_eq!(layout.n_terms(), 2);
     assert_eq!(
@@ -237,10 +237,11 @@ fn akm_panel(
 
 /// Largest absolute within-level mean of `demeaned`, over the levels of every term whose
 /// normal equations force one: only an intercept makes the within-level sum a residual leg.
-fn max_abs_group_mean(design: &OrthogonalDesign<'_>, demeaned: &[f64]) -> f64 {
-    let demeaned = design.incidence().order().permute_in(demeaned);
-    design
-        .terms()
+fn max_abs_group_mean(design: &ReducedDesign<'_>, demeaned: &[f64]) -> f64 {
+    let incidence = design.incidence();
+    let demeaned = incidence.order().permute_in(demeaned);
+    (0..design.layout().n_terms())
+        .map(|t| incidence.term(t))
         .filter(|t| t.layout().intercept())
         .map(|t| {
             let (layout, levels) = (t.layout(), t.levels());
@@ -295,8 +296,10 @@ fn an_aliased_slope_converges(#[case] spec: SlopeSpec) {
     let out = solve_tight(&solver, &panel.y);
     // A floating component grounded by mistake reports a false convergence at an O(1) mean.
     let group_mean = max_abs_group_mean(&solver.design, &out.demeaned);
+    // At δ = 1e-8 no solve reaches 1e-12 (gm ~1e-10); the audit rightly reports it unconverged.
+    let attainable = !matches!(spec, SlopeSpec::NearYearIndex(d) if d == 1e-8);
     assert!(
-        out.converged && group_mean < 1e-9,
+        out.converged == attainable && group_mean < 1e-9,
         "converged={}, gm={group_mean:.3e}",
         out.converged
     );

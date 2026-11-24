@@ -145,9 +145,10 @@ class TestFePreconditioner:
         solver, precond, categories, y = solver_and_precond
         assert "Additive" in repr(precond)
 
-    def test_preconditioner_nrows_ncols_match_solver(self, solver_and_precond):
+    def test_preconditioner_nrows_ncols_match_the_kept_factor(self, solver_and_precond):
+        # The solve eliminates the last of the two 50-level factors; the map covers the first.
         solver, precond, categories, y = solver_and_precond
-        assert precond.nrows == precond.ncols == solver.n_dofs
+        assert precond.nrows == precond.ncols == solver.n_dofs - 50
 
     def test_preconditioner_exposes_build_duration(self):
         categories = as_solver_categories(
@@ -229,8 +230,9 @@ class TestFePreconditioner:
         solver = Solver(categories, preconditioner=PreconditionerConfig.Diagonal())
         precond = solver.preconditioner
 
+        # The solve eliminates the only factor, so the map has nothing left to cover.
         assert precond is not None
-        assert precond.nrows == precond.ncols == 3
+        assert precond.nrows == precond.ncols == 0
 
 
 class TestAdaptive:
@@ -277,10 +279,12 @@ class TestAdaptive:
 
     def test_deferred_build_warnings_surface_on_the_escalating_solve(self, recwarn):
         """The constructor cannot see them: the Schwarz build happens mid-solve."""
-        f = np.array([0, 0, 0, 1, 1, 1], np.uint32)
-        g = np.array([0, 1, 2, 0, 1, 2], np.uint32)
-        z = np.array([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0])
-        y = np.array([1.0, -2.0, 0.5, 3.0, -1.5, 2.5])
+        # `g` is eliminated; the diagonal on `f`'s intercept and slope takes enough
+        # iterations to stall.
+        f = np.array([0, 1] * 6, np.uint32)
+        g = np.array([0, 2, 4, 1, 3] * 2 + [0, 2], np.uint32)
+        z = np.array([-2.0, 1.0, 1.0, -1.0, -1.0, 2.0, 0.5, -0.5, 1.5, -1.5, 3.0, 0.0])
+        y = np.array([1.0, -2.0, 0.5, 3.0, -1.5, 2.5, -0.5, 1.0, 2.0, -3.0, 0.5, 1.5])
         effects = [Effect(f, True, [z]), Effect(g, True)]
         local_solver = LocalSolverConfig(scaling=ScalingConfig(max_iterations=0))
         options = LsmrOptions(tol=1e-12, maxiter=100)

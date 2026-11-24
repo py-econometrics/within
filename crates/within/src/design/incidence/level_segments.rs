@@ -1,20 +1,25 @@
 //! Each level's positions as one segment, and the segmented passes over them.
 
+use std::mem;
 use std::ops::Range;
 
-use inflight::parallel::{Blocks, Pieces, Split, Threads};
+use inflight::parallel::{Accumulators, Blocks, Chunks, Pieces, Split, Threads};
+use schwarz_precond::{MemStack, StackReq};
 
-use super::{LevelSlots, RowIndex};
+use super::RowIndex;
 use crate::PAR_THRESHOLD;
 
 /// Rows of whole segments per task, at least.
 const TASK_ROWS: usize = 16_384;
 /// Rows per leaf of one level's fold; above `PAR_THRESHOLD`, so a sequential fold never joins.
 pub(crate) const LEVEL_LEAF: usize = PAR_THRESHOLD.next_power_of_two();
+/// Rows per leaf of a segmented sum, at least.
+const LEAF_ROWS: usize = 65_536;
 
 /// Level `l` owns the positions `offsets[l]..offsets[l + 1]`: rows, for rows sorted by level, or
-/// positions of a [`RowIndex`]. Its passes cut the segments into tasks of whole segments by the
-/// offsets alone: every pass is independent of the thread count.
+/// positions of a [`RowIndex`]. Its passes cut the segments into tasks of whole segments, and a
+/// sum's tasks into leaves, by the offsets and the sum's length alone: every pass is independent
+/// of the thread count.
 #[derive(Clone, Debug)]
 pub(crate) struct LevelSegments {
     offsets: Vec<usize>,
@@ -64,18 +69,94 @@ impl LevelSegments {
         self.offsets[level]..self.offsets[level + 1]
     }
 
+    fn n_rows(&self) -> usize {
+        self.offsets[self.n_levels()]
+    }
+
+    fn n_tasks(&self) -> usize {
+        self.tasks.len() - 1
+    }
+
+    /// Tasks per leaf of a sum of length `n`: leaves of at least [`LEAF_ROWS`] rows, and more for
+    /// long sums, so a leaf's accumulator stays small next to its rows.
+    fn per_leaf(&self, n: usize) -> usize {
+        let leaf_rows = (4 * n).min(self.n_rows().div_ceil(8)).max(LEAF_ROWS);
+        leaf_rows.div_ceil(TASK_ROWS)
+    }
+
+    /// `f(level, start, segment, scratch)` for each level, `segment` its rows of `v` from row
+    /// `start`; tasks run concurrently, each with `len` values of scratch.
+    pub(crate) fn map(
+        &self,
+        v: &mut [f64],
+        len: usize,
+        stack: &mut MemStack,
+        f: &(impl Fn(usize, usize, &mut [f64], &mut [f64]) + Sync),
+    ) {
+        let (mut scratch, _) = stack.make_with(self.n_tasks() * len, |_| 0.0);
+        let rows = Pieces::new(Pieces::new(v, &self.offsets), &self.tasks);
+        let parts = (rows, Chunks::equal(&mut scratch, self.n_tasks()));
+        self.for_each_task(parts, |levels, (rows, scratch)| {
+            let mut rows = rows.into_inner();
+            for level in levels {
+                let at = self.rows(level);
+                let (segment, tail) = mem::take(&mut rows).split_at_mut(at.len());
+                f(level, at.start, segment, scratch);
+                rows = tail;
+            }
+        });
+    }
+
+    /// `f(state, level, start, segment, out)` for each level, `segment` its rows of `v` from row
+    /// `start`, `out` its `width` values of `outs`; tasks run concurrently, each on its own
+    /// `state` from `init`.
+    pub(crate) fn map_levels<S>(
+        &self,
+        v: &mut [f64],
+        outs: &mut [f64],
+        width: usize,
+        init: impl Fn() -> S + Sync,
+        f: &(impl Fn(&mut S, usize, usize, &mut [f64], &mut [f64]) + Sync),
+    ) {
+        let rows = Pieces::new(Pieces::new(v, &self.offsets), &self.tasks);
+        let outs = Pieces::new(Chunks::equal(outs, self.n_levels()), &self.tasks);
+        self.for_each_task((rows, outs), |levels, (rows, outs)| {
+            let (mut state, mut rows) = (init(), rows.into_inner());
+            for (level, out) in levels.zip(outs.into_values().chunks_exact_mut(width)) {
+                let at = self.rows(level);
+                let (segment, tail) = mem::take(&mut rows).split_at_mut(at.len());
+                f(&mut state, level, at.start, segment, out);
+                rows = tail;
+            }
+        });
+    }
+
+    /// `f(level, rows, out)` for each level, `out` its value of `outs`; tasks run concurrently.
+    fn for_each_level<T: Send>(
+        &self,
+        outs: &mut [T],
+        f: impl Fn(usize, Range<usize>, &mut T) + Sync,
+    ) {
+        let outs = Pieces::new(Chunks::equal(outs, self.n_levels()), &self.tasks);
+        self.for_each_task(outs, |levels, outs| {
+            for (level, out) in levels.zip(outs.into_values()) {
+                f(level, self.rows(level), out);
+            }
+        });
+    }
+
     /// Each level's fold of its rows: `step(state, level, row)` from `init` over leaves of
-    /// [`LEVEL_LEAF`] positions, `merge`d in a fixed binary tree, into `out`'s slot of the level;
-    /// `rows` maps positions to rows, `None` for rows sorted by level.
+    /// [`LEVEL_LEAF`] positions, `merge`d in a fixed binary tree, into `out[level]`; `rows` maps
+    /// positions to rows, `None` for rows sorted by level.
     pub(super) fn fold<S: Copy + Send + Sync>(
         &self,
         rows: Option<&RowIndex>,
         init: S,
         step: &(impl Fn(&mut S, usize, usize) + Sync),
         merge: &(impl Fn(&mut S, &S) + Sync),
-        out: impl LevelSlots<S>,
+        out: &mut [S],
     ) {
-        let level_fold = |level: usize| {
+        let level_fold = |level: usize, at: Range<usize>| {
             let leaf = |at: Range<usize>| {
                 let mut state = init;
                 match rows {
@@ -88,14 +169,9 @@ impl LevelSegments {
                 merge(&mut left, &right);
                 left
             };
-            let at = self.rows(level);
             Threads::All.fold_tree(Blocks::new(at, LEVEL_LEAF), |(_, at)| leaf(at), merge)
         };
-        self.for_each_task(Pieces::new(out, &self.tasks), |levels, mut slots| {
-            for (k, level) in levels.enumerate() {
-                slots.set(k, level_fold(level));
-            }
-        });
+        self.for_each_level(out, |level, at, slot| *slot = level_fold(level, at));
     }
 
     /// `f(levels, part)` for each task, `part` its item of `parts`, one per task; tasks run
@@ -103,6 +179,53 @@ impl LevelSegments {
     fn for_each_task<P: Split>(&self, parts: P, f: impl Fn(Range<usize>, P::Item) + Sync) {
         let levels = Pieces::new(0..self.n_levels(), &self.tasks);
         Threads::All.for_each_item((levels, parts), |_, (levels, part)| f(levels, part));
+    }
+
+    /// `out = Σ_l f_l`, `f(level, rows, acc, scratch)` adding level `level`'s part into its leaf's
+    /// zeroed `acc`, with `len` values of scratch per leaf. The leaves add up in a tree fixed by
+    /// their count; the leftmost leaf's `acc` is `out` itself.
+    pub(crate) fn sum(
+        &self,
+        out: &mut [f64],
+        len: usize,
+        stack: &mut MemStack,
+        f: &(impl Fn(usize, Range<usize>, &mut [f64], &mut [f64]) + Sync),
+    ) {
+        let (n, per_leaf) = (out.len(), self.per_leaf(out.len()));
+        let n_leaves = self.n_tasks().div_ceil(per_leaf);
+        let (mut rest, stack) = stack.make_with((n_leaves - 1) * n, |_| 0.0);
+        let (mut scratch, _) = stack.make_with(n_leaves * len, |_| 0.0);
+        let leaves = (
+            Blocks::new(0..self.n_tasks(), per_leaf),
+            Accumulators::new(out, &mut rest, n_leaves),
+            Chunks::equal(&mut scratch, n_leaves),
+        );
+        Threads::All.fold_tree(
+            leaves,
+            |((_, tasks), first, scratch)| {
+                first.fill(0.0);
+                for level in self.tasks[tasks.start]..self.tasks[tasks.end] {
+                    f(level, self.rows(level), first, scratch);
+                }
+                first
+            },
+            |left, right| {
+                for (a, b) in left.iter_mut().zip(&*right) {
+                    *a += b;
+                }
+                left
+            },
+        );
+    }
+
+    /// What [`map`](Self::map) and [`sum`](Self::sum) take from a stack for a sum of length `n`
+    /// and `len` values of scratch.
+    pub(crate) fn scratch(&self, n: usize, len: usize) -> StackReq {
+        let n_leaves = self.n_tasks().div_ceil(self.per_leaf(n));
+        let map = StackReq::new::<f64>(self.n_tasks() * len);
+        let sum =
+            StackReq::new::<f64>((n_leaves - 1) * n).and(StackReq::new::<f64>(n_leaves * len));
+        map.or(sum)
     }
 }
 

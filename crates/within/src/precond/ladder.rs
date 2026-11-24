@@ -84,7 +84,7 @@ impl Ladder {
 
     /// Resume the ladder of a map built elsewhere at the rung it was built on.
     pub(crate) fn resume(gramian: Gramian<'_>, map: Preconditioner) -> Result<Self, BuildError> {
-        let n = gramian.unknowns().len();
+        let n = gramian.n();
         if map.nrows() != n || map.ncols() != n {
             return Err(BuildError::PreconditionerDimensionMismatch {
                 expected: n,

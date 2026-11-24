@@ -4,14 +4,16 @@
 //! Regenerate via the `#[ignore]`d `regenerate_wire_format_fixture` test.
 
 use rstest::rstest;
-use within::{Effect, LsmrOptions, Preconditioner, Solver};
+use within::{BuildError, Effect, LsmrOptions, Preconditioner, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
 use common::additive;
 
-const WIRE_FORMAT_VERSION: u32 = 23;
-const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v23.postcard");
+const WIRE_FORMAT_VERSION: u32 = 24;
+const PRECOND_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v24.postcard");
+/// Same encoding, but a map over the full system's coefficients.
+const FULL_SYSTEM_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v23.postcard");
 const PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v22.postcard");
 const EARLIER_PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v21.postcard");
 const OLDER_PRE_BUMP_BYTES: &[u8] = include_bytes!("fixtures/preconditioner_v20.postcard");
@@ -112,6 +114,17 @@ fn preconditioner_round_trips(#[case] shape: Shape) {
     }
 }
 
+/// A v23 map acts on every term's coefficients; the reduced system has fewer.
+#[test]
+fn a_full_system_map_is_refused() {
+    let (f, g, z, _) = fixture_problem();
+    let full: Preconditioner = postcard::from_bytes(FULL_SYSTEM_BYTES).expect("v23 decodes");
+    assert!(matches!(
+        Solver::new(fixture_effects(&f, &g, &z), None, full),
+        Err(BuildError::PreconditionerDimensionMismatch { .. })
+    ));
+}
+
 #[rstest]
 #[case::v22(PRE_BUMP_BYTES)]
 #[case::v21(EARLIER_PRE_BUMP_BYTES)]
@@ -122,7 +135,7 @@ fn legacy_fixture_no_longer_decodes(#[case] bytes: &[u8]) {
 }
 
 /// Generate the wire-format fixture. Run with `--ignored` to overwrite
-/// `crates/within/tests/fixtures/preconditioner_v23.postcard`. Intended for
+/// `crates/within/tests/fixtures/preconditioner_v24.postcard`. Intended for
 /// intentional wire-format bumps only; CI runs the non-ignored tests above.
 #[test]
 #[ignore]
@@ -138,7 +151,7 @@ fn regenerate_wire_format_fixture() {
     let bytes = postcard::to_stdvec(prec).expect("serialize");
 
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tests/fixtures/preconditioner_v23.postcard");
+    path.push("tests/fixtures/preconditioner_v24.postcard");
     let mut out = std::fs::File::create(&path).expect("create fixture file");
     out.write_all(&bytes).expect("write fixture bytes");
     eprintln!("wrote {} bytes to {}", bytes.len(), path.display());

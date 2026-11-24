@@ -8,7 +8,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - Long weighted Gram diagonals use compensated accumulation.
-- Weights near the float range are scaled by a power of two, so a level's weight sum stays finite.
+- Weights near either end of the float range are scaled by a power of four, so a level's weight sum and its reciprocal stay finite.
 
 ### Added
 
@@ -18,6 +18,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - **BREAKING:** Python 3.9 is no longer supported; wheels are `cp310-abi3`.
 - **BREAKING:** schwarz-precond's `parallel` module is removed; its primitives come from inflight's `parallel` (its `rayon` feature) under new names: `fold(input, len, leaf, combine)` is `Threads::fold_tree(Blocks::new(input, len), leaf, combine)`, `for_each_piece` and `try_for_each_piece` are `Threads::for_each_item` and `try_for_each_item`, `Split` also needs `type Item` and `into_item`, and `Pieces`, generic over what it cuts, ends in `into_inner` in place of `into_items`. `schwarz_precond::Threads` is inflight's `Threads`. Its `testing` feature is gone: inflight's `testing` feature holds the pool helpers.
+- **BREAKING:** a solve eliminates the term the rows are sorted by exactly, level by level, and LSMR iterates on the system of the remaining terms. `SolveResult::residual` is that system's normal-equation residual, and the diagonal and Schwarz preconditioners act on its coefficients only, so a map serialized before is refused with `PreconditionerDimensionMismatch`. The wire-format fixture moves v23 → v24 (#571).
 - **BREAKING:** the hidden `Design::new_unsorted` is removed: every design sorts its rows by its dominant term. Designs above `u32::MAX` rows are sorted too, and their unsorted terms split their scatter by level like smaller ones; row indices are 4 bytes while every row fits `u32`.
 - A `Design` fixes each term's scatter split once: solvers built from one design under different weights (IRLS) no longer re-sort its unsorted terms.
 - `CoefficientLayout` equality also compares which of a term's columns is the intercept.

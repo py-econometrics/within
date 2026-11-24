@@ -73,21 +73,6 @@ fn a_kept_buffer_applies_as_a_fresh_stack(
 }
 
 #[test]
-fn test_diagonal_preconditioner_single_factor_is_cached() {
-    let categories = array![[0u32], [1], [0], [2], [1]];
-    let precond = PreconditionerConfig::Diagonal;
-
-    let solver = Solver::new(categories.view(), None, &precond).expect("solver build");
-
-    let cached = solver
-        .preconditioner()
-        .expect("single-factor diagonal preconditioner should be cached");
-    assert_eq!(cached.nrows(), 3);
-    assert_eq!(cached.ncols(), 3);
-    assert_eq!(cached.config(), precond);
-}
-
-#[test]
 fn test_solver_batch() {
     let (categories, _) = categories_and_y();
     let y1 = vec![1.0, 2.0, 3.0, 4.0, 5.0];

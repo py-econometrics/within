@@ -14,9 +14,7 @@ use schwarz_precond::{
 use serde::{Deserialize, Serialize};
 
 use crate::config::{LocalSolverConfig, ScalingFailure};
-use crate::design::Column;
-use crate::design::{Channel, ChannelPair};
-use crate::system::Gramian;
+use crate::system::{Gramian, PairBlock};
 use crate::{BuildError, BuildWarning};
 
 /// The rung's map: additive Schwarz over the channel-pair subdomains.
@@ -48,10 +46,7 @@ pub(super) fn build(
     if domains.is_empty() {
         return Ok((None, warnings));
     }
-    Ok((
-        Some(build_additive(domains, gramian.unknowns().len())?),
-        warnings,
-    ))
+    Ok((Some(build_additive(domains, gramian.n())?), warnings))
 }
 
 /// `n_dofs` may exceed the span of subdomain indices; an uncovered column resolves to `0`.
@@ -77,31 +72,17 @@ struct LocalDomain {
     solver: BlockSolver,
 }
 
-/// Same-factor channel pairs are exactly orthogonal after orthogonalization, so never enumerated.
+/// One subdomain per pair block of `S` with a component to act on.
 fn build_local_domains(
     gramian: Gramian<'_>,
     config: &LocalSolverConfig,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
-    let layout = gramian.layout();
-
-    config.validate()?;
-
-    let channels: Vec<Channel> = (0..layout.n_terms())
-        .flat_map(|term| layout.channels(term))
-        .collect();
-    let pairs: Vec<ChannelPair> = channels
-        .iter()
-        .enumerate()
-        .flat_map(|(i, &rows)| {
-            channels[i + 1..]
-                .iter()
-                .filter(move |cols| cols.term != rows.term)
-                .map(move |&cols| ChannelPair { rows, cols })
-        })
-        .collect();
-    let per_pair: Vec<(Option<LocalDomain>, Vec<BuildWarning>)> = pairs
-        .par_iter()
-        .map(|&pair| factor_pair(gramian, pair, config))
+    let (approx, scaling) = (config.factor_config(), config.scaling_policy()?);
+    let on_failure = config.scaling.on_failure;
+    let per_pair: Vec<(Option<LocalDomain>, Vec<BuildWarning>)> = gramian
+        .pair_blocks()
+        .into_par_iter()
+        .map(|block| factor_pair(block, approx, scaling, on_failure))
         .collect::<Result<_, BuildError>>()?;
     let mut domain_pairs = Vec::new();
     let mut warnings = Vec::new();
@@ -110,25 +91,24 @@ fn build_local_domains(
         warnings.extend(pair_warnings);
     }
 
-    // A slope channel breaks `1/√c`'s equal-informativeness assumption (#94), so stay uniform.
-    if !channels
-        .iter()
-        .any(|&c| layout.column(c) != Column::Intercept)
-    {
-        compute_partition_weights(&mut domain_pairs, gramian.unknowns().len());
+    // A slope channel breaks `1/√c`'s equal-informativeness assumption (#94), so stay uniform;
+    // the complement pairs read `e`'s channels too.
+    if !gramian.has_slopes() {
+        compute_partition_weights(&mut domain_pairs, gramian.n());
     }
 
     Ok((domain_pairs, warnings))
 }
 
-/// `G = V Vᵀ`, observation `k` adding `√w_k (z_q(k) e_{a_k} + z_r(k) e_{n_q + b_k})`.
+/// The approximate inverse of `block`, one subdomain over its vertices.
 fn factor_pair(
-    gramian: Gramian<'_>,
-    pair: ChannelPair,
-    config: &LocalSolverConfig,
+    block: PairBlock<'_>,
+    approx: approx_chol::Config,
+    scaling: approx_chol::ScalingPolicy,
+    on_failure: ScalingFailure,
 ) -> Result<(Option<LocalDomain>, Vec<BuildWarning>), BuildError> {
-    let v = gramian.pair_factor(pair);
-    let inverse = approx_chol::factorize_with(v, config.factor_config(), config.scaling_policy()?)
+    let pair = block.pair;
+    let inverse = (block.factorize(approx, scaling))
         .map_err(|e| BuildError::LocalSolverBuild(e.to_string()))?;
 
     let mut warnings = Vec::new();
@@ -136,7 +116,7 @@ fn factor_pair(
         if clamp.scaling == ScalingOutcome::Certified {
             continue;
         }
-        match config.scaling.on_failure {
+        match on_failure {
             ScalingFailure::Warn => warnings.push(BuildWarning::UnscalableComponent {
                 pair,
                 violation: clamp.violation,
@@ -148,20 +128,7 @@ fn factor_pair(
         return Ok((None, warnings));
     }
 
-    let (unknowns, layout) = (gramian.unknowns(), gramian.layout());
-    let (rows, cols) = (
-        unknowns.dofs(layout, pair.rows),
-        unknowns.dofs(layout, pair.cols),
-    );
-    let (n_rows, row_base, col_base) = (rows.len(), rows.start, cols.start);
-    let global = |vertex: usize| {
-        let dof = if vertex < n_rows {
-            row_base + vertex
-        } else {
-            col_base + vertex - n_rows
-        };
-        u32::try_from(dof).expect("the DOF space fits u32")
-    };
+    let global = |vertex| u32::try_from(block.unknown(vertex)).expect("the DOF space fits u32");
     // The factor's components are disjoint blocks, so one subdomain per pair solves each alone.
     let domain = LocalDomain {
         core: SubdomainCore::uniform((0..inverse.n()).map(global).collect()),
@@ -257,16 +224,16 @@ mod build_tests;
 mod tests {
     use super::*;
     use crate::design::Design;
-    use crate::system::OrthogonalDesign;
+    use crate::system::ReducedDesign;
     use crate::Effect;
 
-    fn make_test_design() -> OrthogonalDesign<'static> {
+    fn make_test_design() -> ReducedDesign<'static> {
         Design::from_levels_for_test(vec![
             vec![0, 1, 2, 0, 1, 2],
             vec![0, 1, 0, 1, 0, 1],
             vec![0, 0, 1, 1, 0, 1],
         ])
-        .orthogonalize(None)
+        .reduce(None)
         .unwrap()
     }
 
@@ -315,7 +282,7 @@ mod tests {
             Effect::new(&levels_c, true, []).expect("effect c"),
         ])
         .expect("valid slope design");
-        let design = design.orthogonalize(None).unwrap();
+        let design = design.reduce(None).unwrap();
 
         let (domain_pairs, _) =
             build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
@@ -347,25 +314,26 @@ mod tests {
     #[test]
     fn one_subdomain_per_pair_solves_dead_levels_to_zero() {
         use schwarz_precond::{LocalSolver, MemBuffer, MemStack, Threads};
-        // ±z within one firm cancels a cross cell to exactly zero; worker 4's zero z is dead.
+        // Firms tie workers at five levels and come last, so they are eliminated; worker 4's zero
+        // z leaves its column of `S` dead.
         let workers = [0u32, 0, 1, 1, 2, 2, 3, 3, 4];
-        let firms = [0u32, 0, 2, 2, 0, 1, 3, 3, 0];
+        let firms = [0u32, 0, 2, 2, 0, 1, 3, 3, 4];
         let z = [1.0, -1.0, 2.0, -2.0, 1.0, 1.0, 3.0, -3.0, 0.0];
         let design = Design::new(vec![
             Effect::new(&workers, false, [&z[..]]).expect("slope effect"),
             Effect::new(&firms, true, []).expect("firm effect"),
         ])
         .expect("valid design");
-        let design = design.orthogonalize(None).unwrap();
+        let design = design.reduce(None).unwrap();
         let (domains, _) =
             build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
                 .expect("domains");
         let [domain] = &domains[..] else {
             panic!("one subdomain per pair, got {}", domains.len())
         };
-        // Workers occupy DOFs 0..5 and firms 5..9, in the pair's own numbering.
-        assert_eq!(domain.core.global_indices(), (0..9).collect::<Vec<u32>>());
-        let mut x = vec![1.0; 9];
+        // The workers' slopes are the only unknowns.
+        assert_eq!(domain.core.global_indices(), (0..5).collect::<Vec<u32>>());
+        let mut x = vec![1.0; 5];
         let mut buffer = MemBuffer::new(domain.solver.scratch(Threads::All));
         domain
             .solver
