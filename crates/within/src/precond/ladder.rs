@@ -4,10 +4,13 @@
 use std::time::{Duration, Instant};
 
 use once_cell::sync::OnceCell;
+use schwarz_precond::{
+    mlsmr, EscalationPolicy, IdentityOp, LsmrResult, MlsmrOptions, Operator, SolveError,
+};
 
-use crate::config::{PreconditionerConfig, Rung, Staleness};
-use crate::precond::{build_map, Preconditioner};
-use crate::system::Gramian;
+use crate::config::{LsmrOptions, PreconditionerConfig, Rung, Staleness};
+use crate::precond::Preconditioner;
+use crate::system::{DesignOperator, Gramian};
 use crate::{BuildError, BuildWarning};
 
 /// A rung's settled build: its map, or `None` where it has nothing to act on.
@@ -21,7 +24,8 @@ struct RungBuild {
 /// The rungs of one configuration on one system, climbed upward only.
 pub(crate) struct Ladder {
     config: PreconditionerConfig,
-    /// One cell per rung; a design's own build failure settles too, a failed isolation pool retries.
+    /// One cell per rung; a rung the system does not offer settles without a map at construction,
+    /// a design's own build failure settles too, a failed isolation pool retries.
     built: Vec<OnceCell<Built>>,
 }
 
@@ -29,12 +33,30 @@ pub(crate) struct Ladder {
 #[derive(Clone, Copy)]
 pub(crate) struct Current<'l> {
     top: Option<(usize, &'l Preconditioner)>,
-    pub(crate) stall: Option<&'l Staleness>,
+    stall: Option<&'l Staleness>,
 }
 
-impl<'l> Current<'l> {
-    pub(crate) fn map(&self) -> Option<&'l Preconditioner> {
-        self.top.map(|(_, map)| map)
+impl Current<'_> {
+    /// LSMR on `a` from `start` within what `spent` leaves of `lsmr.maxiter`, on this rung's map
+    /// (`I` without one), handing off on its stall.
+    pub(crate) fn run(
+        &self,
+        a: &DesignOperator<'_>,
+        b: &[f64],
+        lsmr: &LsmrOptions,
+        spent: usize,
+        start: Option<&[f64]>,
+    ) -> Result<LsmrResult, SolveError> {
+        let identity = IdentityOp { n: a.ncols() };
+        let m: &dyn Operator = match self.top {
+            Some((_, map)) => map,
+            None => &identity,
+        };
+        let options = MlsmrOptions {
+            escalation: self.stall.map(|s| s as &dyn EscalationPolicy),
+            local_size: lsmr.local_size,
+        };
+        mlsmr(a, b, m, lsmr.tol, lsmr.maxiter - spent, start, options)
     }
 }
 
@@ -47,10 +69,16 @@ impl Ladder {
         // Fail before the first build, so a deferred rung never meets an invalid config.
         config.validate()?;
         let ladder = Self::unbuilt(config);
-        if let Some(rung) = ladder.config.rungs().next() {
+        if let Some((rung, _)) = ladder
+            .config
+            .rungs()
+            .next()
+            .filter(|(r, _)| r.offers(gramian))
+        {
             let first = ladder.build(gramian, 0, rung)?;
             let _ = ladder.built[0].set(Ok(first));
         }
+        ladder.decline_unoffered(gramian);
         Ok(ladder)
     }
 
@@ -72,6 +100,7 @@ impl Ladder {
             map: Some(map),
             warnings: Vec::new(),
         }));
+        ladder.decline_unoffered(gramian);
         Ok(ladder)
     }
 
@@ -80,13 +109,22 @@ impl Ladder {
         Self { config, built }
     }
 
+    /// Settle each rung the system does not offer, without a map; run after the base rung, so each
+    /// carries the warnings below it.
+    fn decline_unoffered(&self, gramian: Gramian<'_>) {
+        for (cell, (rung, _)) in self.built.iter().zip(self.config.rungs()) {
+            if !rung.offers(gramian) {
+                let _ = cell.set(Ok(RungBuild {
+                    map: None,
+                    warnings: self.warnings().to_vec(),
+                }));
+            }
+        }
+    }
+
     fn build(&self, gramian: Gramian<'_>, at: usize, rung: Rung<'_>) -> Built {
         let started = Instant::now();
-        let (map, own) = if offers(gramian, rung) {
-            build_map(gramian, rung)?
-        } else {
-            (None, Vec::new())
-        };
+        let (map, own) = rung.build(gramian)?;
         // Each build carries the warnings below it, so `warnings()` only ever grows.
         let mut warnings = self.warnings().to_vec();
         warnings.extend(own);
@@ -113,37 +151,34 @@ impl Ladder {
             })
     }
 
-    /// The first rung above `at` this system offers that has not settled without a map.
-    fn next(&self, gramian: Gramian<'_>, at: Option<usize>) -> Option<(usize, Rung<'_>)> {
+    /// The first rung above `at` that has not settled without a map.
+    fn next(&self, at: Option<usize>) -> Option<(usize, Rung<'_>)> {
         self.config
             .rungs()
+            .map(|(rung, _)| rung)
             .enumerate()
             .skip(at.map_or(0, |at| at + 1))
-            .filter(|(at, _)| {
-                !matches!(self.built[*at].get(), Some(Ok(RungBuild { map: None, .. })))
-            })
-            .find(|(_, rung)| offers(gramian, *rung))
+            .find(|(at, _)| !matches!(self.built[*at].get(), Some(Ok(RungBuild { map: None, .. }))))
     }
 
     /// The top map, where a solve starts.
-    pub(crate) fn current(&self, gramian: Gramian<'_>) -> Result<Current<'_>, BuildError> {
-        self.on(gramian, self.top())
+    pub(crate) fn current(&self) -> Result<Current<'_>, BuildError> {
+        self.on(self.top())
     }
 
     /// `top`'s map, with the stall that leaves it armed only while a rung above can still be built.
     fn on<'l>(
         &'l self,
-        gramian: Gramian<'_>,
         top: Option<(usize, &'l Preconditioner)>,
     ) -> Result<Current<'l>, BuildError> {
         let at = top.map(|(at, _)| at);
-        let stall = match (at, self.next(gramian, at)) {
+        let stall = match (at, self.next(at)) {
             (Some(at), Some((next, _))) => {
                 // A settled build failure is final: every later solve reports it.
                 if let Some(Err(e)) = self.built[next].get() {
                     return Err(e.clone());
                 }
-                self.config.stall(at)
+                self.config.rungs().nth(at).and_then(|(_, stall)| stall)
             }
             _ => None,
         };
@@ -157,8 +192,8 @@ impl Ladder {
         gramian: Gramian<'_>,
         stalled: &Current<'l>,
     ) -> Result<(Current<'l>, Duration), BuildError> {
-        let Some((next, rung)) = self.next(gramian, stalled.top.map(|(at, _)| at)) else {
-            return Ok((self.on(gramian, stalled.top)?, Duration::ZERO));
+        let Some((next, rung)) = self.next(stalled.top.map(|(at, _)| at)) else {
+            return Ok((self.on(stalled.top)?, Duration::ZERO));
         };
         let mut spent = Duration::ZERO;
         let built = self.built[next].get_or_try_init(|| {
@@ -172,7 +207,7 @@ impl Ladder {
             Ok(RungBuild { map: None, .. }) => stalled.top,
             Err(e) => return Err(e.clone()),
         };
-        Ok((self.on(gramian, top)?, spent))
+        Ok((self.on(top)?, spent))
     }
 
     /// The map a solve starts on: the highest rung built so far.
@@ -193,14 +228,6 @@ impl Ladder {
             .rev()
             .find_map(|cell| cell.get()?.as_ref().ok())
             .map_or(&[], |build| &build.warnings)
-    }
-}
-
-/// Whether `rung` can act on this system: Schwarz needs a channel pair, hence two terms.
-fn offers(gramian: Gramian<'_>, rung: Rung<'_>) -> bool {
-    match rung {
-        Rung::Diagonal => true,
-        Rung::Schwarz(_) => gramian.layout().n_terms() >= 2,
     }
 }
 

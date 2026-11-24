@@ -85,14 +85,35 @@ enum Map {
     Schwarz(FeSchwarz),
 }
 
-impl Map {
-    fn is_built_by(&self, rung: &Rung<'_>) -> bool {
+impl Rung<'_> {
+    /// Whether this rung can act on the system: Schwarz needs a channel pair, hence two terms.
+    fn offers(&self, gramian: Gramian<'_>) -> bool {
+        match self {
+            Self::Diagonal => true,
+            Self::Schwarz(_) => gramian.layout().n_terms() >= 2,
+        }
+    }
+
+    fn builds(&self, map: &Map) -> bool {
         matches!(
-            (self, rung),
-            (Self::Diagonal(_), Rung::Diagonal) | (Self::Schwarz(_), Rung::Schwarz(_))
+            (self, map),
+            (Self::Diagonal, Map::Diagonal(_)) | (Self::Schwarz(_), Map::Schwarz(_))
         )
     }
 
+    /// Build the map; `None` when it has nothing to act on (Schwarz with no pair to act on).
+    fn build(&self, gramian: Gramian<'_>) -> Result<(Option<Map>, Vec<BuildWarning>), BuildError> {
+        Ok(match self {
+            Self::Diagonal => (Some(Map::Diagonal(diagonal_map(gramian)?)), Vec::new()),
+            Self::Schwarz(schwarz) => {
+                let (schwarz, warnings) = schwarz::build(gramian, &schwarz.local_solver)?;
+                (schwarz.map(Map::Schwarz), warnings)
+            }
+        })
+    }
+}
+
+impl Map {
     fn operator(&self) -> &dyn Operator {
         match self {
             Self::Diagonal(p) => p,
@@ -122,7 +143,7 @@ impl TryFrom<PreconditionerWire> for Preconditioner {
         if !config
             .rungs()
             .nth(rung)
-            .is_some_and(|r| map.is_built_by(&r))
+            .is_some_and(|(r, _)| r.builds(&map))
         {
             return Err(format!("the map is not rung {rung} of {config:?}"));
         }
@@ -217,20 +238,6 @@ impl Operator for Preconditioner {
     ) -> Result<(), schwarz_precond::SolveError> {
         self.apply_with(x, y, stack)
     }
-}
-
-/// Build one rung's map; `None` when it has nothing to act on (Schwarz without a channel pair).
-fn build_map(
-    gramian: Gramian<'_>,
-    rung: Rung<'_>,
-) -> Result<(Option<Map>, Vec<BuildWarning>), BuildError> {
-    Ok(match rung {
-        Rung::Diagonal => (Some(Map::Diagonal(diagonal_map(gramian)?)), Vec::new()),
-        Rung::Schwarz(schwarz) => {
-            let (schwarz, warnings) = schwarz::build(gramian, &schwarz.local_solver)?;
-            (schwarz.map(Map::Schwarz), warnings)
-        }
-    })
 }
 
 fn diagonal_map(gramian: Gramian<'_>) -> Result<DiagonalPreconditioner, BuildError> {

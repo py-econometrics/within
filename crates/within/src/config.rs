@@ -188,30 +188,22 @@ impl Default for PreconditionerConfig {
 }
 
 impl PreconditionerConfig {
-    /// The rungs a solve climbs, in order.
-    pub(crate) fn rungs(&self) -> impl Iterator<Item = Rung<'_>> {
+    /// The rungs a solve climbs, in order, each with the stall that hands a solve to the next.
+    pub(crate) fn rungs(&self) -> impl Iterator<Item = (Rung<'_>, Option<&Staleness>)> {
         let (first, second) = match self {
             Self::Off => (None, None),
-            Self::Diagonal => (Some(Rung::Diagonal), None),
-            Self::Schwarz(schwarz) => (Some(Rung::Schwarz(schwarz)), None),
-            Self::Adaptive { schwarz, .. } => (Some(Rung::Diagonal), Some(Rung::Schwarz(schwarz))),
+            Self::Diagonal => (Some((Rung::Diagonal, None)), None),
+            Self::Schwarz(schwarz) => (Some((Rung::Schwarz(schwarz), None)), None),
+            Self::Adaptive { stall, schwarz } => (
+                Some((Rung::Diagonal, Some(stall))),
+                Some((Rung::Schwarz(schwarz), None)),
+            ),
         };
         first.into_iter().chain(second)
     }
 
-    /// The stall that hands a solve from rung `at` to the next; `None` on a rung never left.
-    pub(crate) fn stall(&self, at: usize) -> Option<&Staleness> {
-        match self {
-            Self::Adaptive { stall, .. } if at == 0 => Some(stall),
-            _ => None,
-        }
-    }
-
     pub(crate) fn validate(&self) -> Result<(), BuildError> {
-        self.rungs().try_for_each(|rung| match rung {
-            Rung::Diagonal => Ok(()),
-            Rung::Schwarz(schwarz) => schwarz.local_solver.validate(),
-        })
+        self.rungs().try_for_each(|(rung, _)| rung.validate())
     }
 }
 
@@ -220,6 +212,16 @@ impl PreconditionerConfig {
 pub(crate) enum Rung<'c> {
     Diagonal,
     Schwarz(&'c Schwarz),
+}
+
+impl Rung<'_> {
+    /// Separate from any build so a deferred rung can reject its config at construction.
+    fn validate(&self) -> Result<(), BuildError> {
+        match self {
+            Self::Diagonal => Ok(()),
+            Self::Schwarz(schwarz) => schwarz.local_solver.validate(),
+        }
+    }
 }
 
 /// LSMR solver configuration: tolerances and reorthogonalization window.

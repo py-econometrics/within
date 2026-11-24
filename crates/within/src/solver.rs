@@ -6,9 +6,7 @@ use std::time::Instant;
 
 use ndarray::ArrayView2;
 use rayon::prelude::*;
-use schwarz_precond::{
-    mlsmr, EscalationPolicy, IdentityOp, LsmrResult, LsmrStopReason, MlsmrOptions, Operator,
-};
+use schwarz_precond::{LsmrResult, LsmrStopReason};
 
 use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::design::{CoefficientAddress, CoefficientLayout};
@@ -263,31 +261,10 @@ impl<'a> Solver<'a> {
         // The whole ladder shares the caller's budget; each rung resumes from the last one's x.
         let mut x: Option<Vec<f64>> = None;
         let mut spent = 0;
+        let a = DesignOperator::new(&self.design);
         loop {
-            let identity;
-            let m: &dyn Operator = match rung.map() {
-                Some(m) => m,
-                None => {
-                    identity = IdentityOp {
-                        n: self.design.unknowns().len(),
-                    };
-                    &identity
-                }
-            };
-            let options = MlsmrOptions {
-                escalation: rung.stall.map(|s| s as &dyn EscalationPolicy),
-                local_size: lsmr.local_size,
-            };
             let started = Instant::now();
-            let result = mlsmr(
-                &DesignOperator::new(&self.design),
-                rhs.weighted(),
-                m,
-                lsmr.tol,
-                lsmr.maxiter - spent,
-                x.as_deref(),
-                options,
-            )?;
+            let result = rung.run(&a, rhs.weighted(), lsmr, spent, x.as_deref())?;
             seconds.lsmr += started.elapsed().as_secs_f64();
             spent += result.iterations;
             if result.stop_reason == LsmrStopReason::Escalated {
@@ -323,7 +300,7 @@ impl<'a> Solver<'a> {
     ) -> Result<Vec<RhsSolution>, WithinError> {
         let gramian = Gramian::new(&self.design);
         // Read once: a column must not start on a rung a sibling built during this call.
-        let start = self.ladder.current(gramian)?;
+        let start = self.ladder.current()?;
         ys.par_iter()
             .map(|&y| self.climb(gramian, start, y, lsmr))
             .collect()
