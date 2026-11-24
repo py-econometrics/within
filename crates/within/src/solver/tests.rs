@@ -4,7 +4,7 @@ use super::CoefficientAddress;
 use crate::config::{LocalSolverConfig, LsmrOptions};
 use crate::design::Channel;
 use crate::design::Design;
-use crate::system::{Gramian, OrthogonalDesign};
+use crate::system::OrthogonalDesign;
 use crate::{Effect, PreconditionerConfig, Solver};
 
 /// DGP kept in lockstep with `surplus_component_sampled_matches_exact_reduction`
@@ -364,7 +364,7 @@ fn a_failed_deferred_build_is_kept_and_reported_again() {
     assert!(unscalable(&first), "{first:?}");
     // The ladder reports the kept error before any further solve could rebuild.
     assert!(matches!(
-        solver.ladder.current(Gramian::new(&solver.design)),
+        solver.ladder.current(),
         Err(BuildError::UnscalableComponent { .. })
     ));
     assert!(unscalable(&solver.solve(&panel.y, None)));

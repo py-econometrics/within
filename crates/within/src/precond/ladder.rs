@@ -21,7 +21,8 @@ struct RungBuild {
 /// The rungs of one configuration on one system, climbed upward only.
 pub(crate) struct Ladder {
     config: PreconditionerConfig,
-    /// One cell per rung; a design's own build failure settles too, a failed isolation pool retries.
+    /// One cell per rung; a rung the system does not offer settles without a map at construction,
+    /// a design's own build failure settles too, a failed isolation pool retries.
     built: Vec<OnceCell<Built>>,
 }
 
@@ -47,9 +48,15 @@ impl Ladder {
         // Fail before the first build, so a deferred rung never meets an invalid config.
         config.validate()?;
         let ladder = Self::unbuilt(config);
-        if let Some(rung) = ladder.config.rungs().next() {
-            let first = ladder.build(gramian, 0, rung)?;
-            let _ = ladder.built[0].set(Ok(first));
+        for (at, rung) in ladder.config.rungs().enumerate() {
+            let settled = if !offers(gramian, rung) {
+                ladder.declined()
+            } else if at == 0 {
+                ladder.build(gramian, at, rung)?
+            } else {
+                continue;
+            };
+            let _ = ladder.built[at].set(Ok(settled));
         }
         Ok(ladder)
     }
@@ -72,6 +79,11 @@ impl Ladder {
             map: Some(map),
             warnings: Vec::new(),
         }));
+        for (above, rung) in ladder.config.rungs().enumerate().skip(at + 1) {
+            if !offers(gramian, rung) {
+                let _ = ladder.built[above].set(Ok(ladder.declined()));
+            }
+        }
         Ok(ladder)
     }
 
@@ -80,13 +92,17 @@ impl Ladder {
         Self { config, built }
     }
 
+    /// A rung settled without a map, carrying the warnings below it.
+    fn declined(&self) -> RungBuild {
+        RungBuild {
+            map: None,
+            warnings: self.warnings().to_vec(),
+        }
+    }
+
     fn build(&self, gramian: Gramian<'_>, at: usize, rung: Rung<'_>) -> Built {
         let started = Instant::now();
-        let (map, own) = if offers(gramian, rung) {
-            build_map(gramian, rung)?
-        } else {
-            (None, Vec::new())
-        };
+        let (map, own) = build_map(gramian, rung)?;
         // Each build carries the warnings below it, so `warnings()` only ever grows.
         let mut warnings = self.warnings().to_vec();
         warnings.extend(own);
@@ -113,31 +129,27 @@ impl Ladder {
             })
     }
 
-    /// The first rung above `at` this system offers that has not settled without a map.
-    fn next(&self, gramian: Gramian<'_>, at: Option<usize>) -> Option<(usize, Rung<'_>)> {
+    /// The first rung above `at` that has not settled without a map.
+    fn next(&self, at: Option<usize>) -> Option<(usize, Rung<'_>)> {
         self.config
             .rungs()
             .enumerate()
             .skip(at.map_or(0, |at| at + 1))
-            .filter(|(at, _)| {
-                !matches!(self.built[*at].get(), Some(Ok(RungBuild { map: None, .. })))
-            })
-            .find(|(_, rung)| offers(gramian, *rung))
+            .find(|(at, _)| !matches!(self.built[*at].get(), Some(Ok(RungBuild { map: None, .. }))))
     }
 
     /// The top map, where a solve starts.
-    pub(crate) fn current(&self, gramian: Gramian<'_>) -> Result<Current<'_>, BuildError> {
-        self.on(gramian, self.top())
+    pub(crate) fn current(&self) -> Result<Current<'_>, BuildError> {
+        self.on(self.top())
     }
 
     /// `top`'s map, with the stall that leaves it armed only while a rung above can still be built.
     fn on<'l>(
         &'l self,
-        gramian: Gramian<'_>,
         top: Option<(usize, &'l Preconditioner)>,
     ) -> Result<Current<'l>, BuildError> {
         let at = top.map(|(at, _)| at);
-        let stall = match (at, self.next(gramian, at)) {
+        let stall = match (at, self.next(at)) {
             (Some(at), Some((next, _))) => {
                 // A settled build failure is final: every later solve reports it.
                 if let Some(Err(e)) = self.built[next].get() {
@@ -157,8 +169,8 @@ impl Ladder {
         gramian: Gramian<'_>,
         stalled: &Current<'l>,
     ) -> Result<(Current<'l>, Duration), BuildError> {
-        let Some((next, rung)) = self.next(gramian, stalled.top.map(|(at, _)| at)) else {
-            return Ok((self.on(gramian, stalled.top)?, Duration::ZERO));
+        let Some((next, rung)) = self.next(stalled.top.map(|(at, _)| at)) else {
+            return Ok((self.on(stalled.top)?, Duration::ZERO));
         };
         let mut spent = Duration::ZERO;
         let built = self.built[next].get_or_try_init(|| {
@@ -172,7 +184,7 @@ impl Ladder {
             Ok(RungBuild { map: None, .. }) => stalled.top,
             Err(e) => return Err(e.clone()),
         };
-        Ok((self.on(gramian, top)?, spent))
+        Ok((self.on(top)?, spent))
     }
 
     /// The map a solve starts on: the highest rung built so far.

@@ -323,7 +323,7 @@ impl<'a> Solver<'a> {
     ) -> Result<Vec<RhsSolution>, WithinError> {
         let gramian = Gramian::new(&self.design);
         // Read once: a column must not start on a rung a sibling built during this call.
-        let start = self.ladder.current(gramian)?;
+        let start = self.ladder.current()?;
         ys.par_iter()
             .map(|&y| self.climb(gramian, start, y, lsmr))
             .collect()
