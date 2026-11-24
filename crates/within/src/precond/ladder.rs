@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use once_cell::sync::OnceCell;
 
 use crate::config::{PreconditionerConfig, Rung, Staleness};
-use crate::precond::{build_map, Preconditioner};
+use crate::precond::Preconditioner;
 use crate::system::Gramian;
 use crate::{BuildError, BuildWarning};
 
@@ -48,8 +48,8 @@ impl Ladder {
         // Fail before the first build, so a deferred rung never meets an invalid config.
         config.validate()?;
         let ladder = Self::unbuilt(config);
-        for (at, rung) in ladder.config.rungs().enumerate() {
-            let settled = if !offers(gramian, rung) {
+        for (at, (rung, _)) in ladder.config.rungs().enumerate() {
+            let settled = if !rung.offers(gramian) {
                 ladder.declined()
             } else if at == 0 {
                 ladder.build(gramian, at, rung)?
@@ -79,8 +79,8 @@ impl Ladder {
             map: Some(map),
             warnings: Vec::new(),
         }));
-        for (above, rung) in ladder.config.rungs().enumerate().skip(at + 1) {
-            if !offers(gramian, rung) {
+        for (above, (rung, _)) in ladder.config.rungs().enumerate().skip(at + 1) {
+            if !rung.offers(gramian) {
                 let _ = ladder.built[above].set(Ok(ladder.declined()));
             }
         }
@@ -102,7 +102,7 @@ impl Ladder {
 
     fn build(&self, gramian: Gramian<'_>, at: usize, rung: Rung<'_>) -> Built {
         let started = Instant::now();
-        let (map, own) = build_map(gramian, rung)?;
+        let (map, own) = rung.build(gramian)?;
         // Each build carries the warnings below it, so `warnings()` only ever grows.
         let mut warnings = self.warnings().to_vec();
         warnings.extend(own);
@@ -133,6 +133,7 @@ impl Ladder {
     fn next(&self, at: Option<usize>) -> Option<(usize, Rung<'_>)> {
         self.config
             .rungs()
+            .map(|(rung, _)| rung)
             .enumerate()
             .skip(at.map_or(0, |at| at + 1))
             .find(|(at, _)| !matches!(self.built[*at].get(), Some(Ok(RungBuild { map: None, .. }))))
@@ -155,7 +156,7 @@ impl Ladder {
                 if let Some(Err(e)) = self.built[next].get() {
                     return Err(e.clone());
                 }
-                self.config.stall(at)
+                self.config.rungs().nth(at).and_then(|(_, stall)| stall)
             }
             _ => None,
         };
@@ -205,14 +206,6 @@ impl Ladder {
             .rev()
             .find_map(|cell| cell.get()?.as_ref().ok())
             .map_or(&[], |build| &build.warnings)
-    }
-}
-
-/// Whether `rung` can act on this system: Schwarz needs a channel pair, hence two terms.
-fn offers(gramian: Gramian<'_>, rung: Rung<'_>) -> bool {
-    match rung {
-        Rung::Diagonal => true,
-        Rung::Schwarz(_) => gramian.layout().n_terms() >= 2,
     }
 }
 
