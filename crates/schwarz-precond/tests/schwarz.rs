@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use rstest::{fixture, rstest};
 use schwarz_precond::parallel::in_pool;
 use schwarz_precond::{
-    mlsmr, IdentityOp, LocalSolveError, LocalSolver, MemStack, MlsmrOptions, Operator,
+    mlsmr, IdentityOp, LocalSolveError, LocalSolver, MemBuffer, MemStack, MlsmrOptions, Operator,
     PartitionWeights, SchwarzPreconditioner, StackReq, SubdomainCore, SubdomainEntry, Threads,
 };
 
@@ -650,7 +650,8 @@ fn a_local_solve_gets_the_alignment_it_asks_for() {
     assert_eq!(z, [1.0, 2.0, 3.0]);
 }
 
-/// Halves `x`; asks for a mebibyte at every thread and a cache line alone, and has `work` to share.
+/// Halves `x`; asks for a mebibyte at every thread and a cache line alone, makes do with the line,
+/// and has `work` to share.
 struct ByBudget {
     work: usize,
 }
@@ -671,7 +672,9 @@ impl LocalSolver for ByBudget {
         threads: Threads,
         stack: &mut MemStack,
     ) -> Result<(), LocalSolveError> {
-        let _ = stack.make_uninit::<u8>(self.scratch(threads).size_bytes());
+        let wanted = Some(self.scratch(threads)).filter(|&req| stack.can_hold(req));
+        let req = wanted.unwrap_or(self.scratch(Threads::ONE));
+        let _ = stack.make_uninit::<u8>(req.size_bytes());
         x[0] *= 0.5;
         Ok(())
     }
@@ -709,7 +712,7 @@ fn a_stack_sized_in_one_pool_serves_an_apply_in_another() {
     )];
     let schwarz = SchwarzPreconditioner::new(entries);
     let req = in_pool(1, || schwarz.scratch());
-    let mut buffer = schwarz_precond::MemBuffer::new(req);
+    let mut buffer = MemBuffer::new(req);
     let mut z = vec![0.0; 1];
     in_pool(4, || {
         schwarz.apply_with(&[2.0], &mut z, MemStack::new(&mut buffer))
