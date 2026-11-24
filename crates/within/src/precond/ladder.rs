@@ -37,14 +37,14 @@ pub(crate) struct Current<'l> {
 }
 
 impl Current<'_> {
-    /// LSMR on `a` from `start` within `maxiter`, on this rung's map (`I` without one), handing
-    /// off on its stall.
+    /// LSMR on `a` from `start` within what `spent` leaves of `lsmr.maxiter`, on this rung's map
+    /// (`I` without one), handing off on its stall.
     pub(crate) fn run(
         &self,
         a: &DesignOperator<'_>,
         b: &[f64],
         lsmr: &LsmrOptions,
-        maxiter: usize,
+        spent: usize,
         start: Option<&[f64]>,
     ) -> Result<LsmrResult, SolveError> {
         let identity = IdentityOp { n: a.ncols() };
@@ -56,7 +56,7 @@ impl Current<'_> {
             escalation: self.stall.map(|s| s as &dyn EscalationPolicy),
             local_size: lsmr.local_size,
         };
-        mlsmr(a, b, m, lsmr.tol, maxiter, start, options)
+        mlsmr(a, b, m, lsmr.tol, lsmr.maxiter - spent, start, options)
     }
 }
 
@@ -69,16 +69,16 @@ impl Ladder {
         // Fail before the first build, so a deferred rung never meets an invalid config.
         config.validate()?;
         let ladder = Self::unbuilt(config);
-        for (at, (rung, _)) in ladder.config.rungs().enumerate() {
-            let settled = if !rung.offers(gramian) {
-                ladder.declined()
-            } else if at == 0 {
-                ladder.build(gramian, at, rung)?
-            } else {
-                continue;
-            };
-            let _ = ladder.built[at].set(Ok(settled));
+        if let Some((rung, _)) = ladder
+            .config
+            .rungs()
+            .next()
+            .filter(|(r, _)| r.offers(gramian))
+        {
+            let first = ladder.build(gramian, 0, rung)?;
+            let _ = ladder.built[0].set(Ok(first));
         }
+        ladder.decline_unoffered(gramian);
         Ok(ladder)
     }
 
@@ -100,11 +100,7 @@ impl Ladder {
             map: Some(map),
             warnings: Vec::new(),
         }));
-        for (above, (rung, _)) in ladder.config.rungs().enumerate().skip(at + 1) {
-            if !rung.offers(gramian) {
-                let _ = ladder.built[above].set(Ok(ladder.declined()));
-            }
-        }
+        ladder.decline_unoffered(gramian);
         Ok(ladder)
     }
 
@@ -113,11 +109,16 @@ impl Ladder {
         Self { config, built }
     }
 
-    /// A rung settled without a map, carrying the warnings below it.
-    fn declined(&self) -> RungBuild {
-        RungBuild {
-            map: None,
-            warnings: self.warnings().to_vec(),
+    /// Settle each rung the system does not offer, without a map; run after the base rung, so each
+    /// carries the warnings below it.
+    fn decline_unoffered(&self, gramian: Gramian<'_>) {
+        for (cell, (rung, _)) in self.built.iter().zip(self.config.rungs()) {
+            if !rung.offers(gramian) {
+                let _ = cell.set(Ok(RungBuild {
+                    map: None,
+                    warnings: self.warnings().to_vec(),
+                }));
+            }
         }
     }
 

@@ -101,7 +101,7 @@ impl Rung<'_> {
         )
     }
 
-    /// Build the map; `None` when it has nothing to act on (Schwarz without a channel pair).
+    /// Build the map; `None` when it has nothing to act on (Schwarz with no pair to act on).
     fn build(&self, gramian: Gramian<'_>) -> Result<(Option<Map>, Vec<BuildWarning>), BuildError> {
         Ok(match self {
             Self::Diagonal => (Some(Map::Diagonal(diagonal_map(gramian)?)), Vec::new()),
