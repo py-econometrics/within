@@ -17,17 +17,19 @@ take. "(not: …)" lists synonyms we don't use.
 | $y$, $\beta$, $\tilde y$ | response, coefficients, demeaned response |
 | $R_t$, $\tilde D = DR$, $\hat x$ | orthogonalizing change of basis, orthogonal design, solve coordinates |
 | $u_q(i)$ | orthogonalized loading of channel $q$ at observation $i$ |
-| $A = W^{1/2} \tilde D$, $b = W^{1/2} y$ | system matrix, right-hand side |
-| $G = A^\top A$ | Gramian |
+| $A = W^{1/2} \tilde D$, $G = A^\top A$ | weighted design, full Gramian |
+| $e$, $A_e$, $A_k$, $P_e$ | eliminated term, its block of $A$, the kept terms' block, projection onto $\operatorname{range} A_e$ |
+| $A_r = (I - P_e) A_k$, $b = (I - P_e) W^{1/2} y$ | system matrix, right-hand side |
+| $S = A_r^\top A_r$ | Gramian |
 | $\Delta_q$, $C_{qr}$, $G_{qr}$ | diagonal block of channel $q$, cross block and pair block of channels $q, r$ |
 | $V$ | Gram factor of a pair block, $G_{qr} = VV^\top$ |
-| $M$ | preconditioner |
+| $M$ | preconditioner, $M \approx S$ |
 | $R_{qr}$, $\Omega_{qr}$ | restriction and partition-of-unity weights of the subdomain of channels $q, r$ |
 | $c_j$, $\omega_j$ | overlap count and partition-of-unity weight of DOF $j$ |
 | $B_{qr}$ | local solve, the approximate inverse of $G_{qr}$ |
 | $\Lambda$ | dominance scaling |
 | $\sigma$ | signature |
-| $x_k$, $r_k = b - Ax_k$ | iterate, residual |
+| $x_k$, $r_k = b - A_r x_k$ | iterate, residual |
 | $\rho_k$ | contraction ratio |
 
 ## Panel and design
@@ -51,6 +53,9 @@ take. "(not: …)" lists synonyms we don't use.
   zeros elsewhere. Written $D = E \bullet X$: the incidence picks the level, the loadings $X$
   fill it. The design carries no weights.
 - **Incidence** $E_t$: the $n \times L_t$ 0/1 matrix with $E_t[i, \ell_t(i)] = 1$.
+- **Segment** $R_\ell$: the rows of level $\ell$ of the term the rows are sorted by, which are
+  contiguous, so its incidence is $\operatorname{blockdiag}(\mathbb{1}_{R_0}, \dots)$. A
+  **segmented** pass works on each segment alone, or sums over them.
 - **Channel:** one coefficient column of a term, the intercept or one slope, addressed
   (term, column) with the intercept first. It spans $L_t$ DOFs, one per level.
 - **DOF** (degree of freedom; not: factor level): one coefficient, a channel at a level; one
@@ -104,10 +109,19 @@ take. "(not: …)" lists synonyms we don't use.
   $0$ on dropped ones.
 - **Solve coordinates** $\hat x$: coefficients of $\tilde D$. The **back-transform**
   $\beta = R\hat x$ returns to the caller's parametrization; $\tilde D\hat x = D\beta$.
-- **System matrix** $A = W^{1/2}\tilde D$ (not: operator), $n \times m$, applied, never
-  assembled. LSMR iterates on $A$ with the **right-hand side** $b = W^{1/2} y$.
-- **Gramian** $G = A^\top A = \tilde D^\top W \tilde D$ (not: normal matrix, Hessian), $m \times m$,
-  symmetric PSD. Preconditioners are built from $G$; the iteration never sees it.
+- **Weighted design** $A = W^{1/2}\tilde D$, $n \times m$, and the **full Gramian**
+  $G = A^\top A = \tilde D^\top W \tilde D$ (not: normal matrix, Hessian), symmetric PSD. Neither
+  is assembled; the solve works on their reduced forms below.
+- **Eliminated term** $e$: the design's **sort term**, the one the rows are sorted by and with the
+  most DOFs. Its block $G_{ee}$ is diagonal, so the projection $P_e = A_e G_{ee}^{+} A_e^\top$
+  onto its span acts on each segment alone. The other terms are **kept**; their coefficients, the
+  **unknowns** $x$, are what the iteration solves for, $m_k$ of them.
+- **System matrix** $A_r = (I - P_e) A_k$ (not: operator), $n \times m_k$, applied, never
+  assembled. LSMR iterates on $A_r$ with the **right-hand side** $b = (I - P_e) W^{1/2} y$.
+  **Recovery** then gives $x_e = G_{ee}^{+} A_e^\top (W^{1/2} y - A_k x)$.
+- **Gramian** $S = A_r^\top A_r = G_{kk} - G_{ke} G_{ee}^{+} G_{ek}$, the Schur complement of
+  $G_{ee}$ in $G$; $m_k \times m_k$, symmetric PSD. Preconditioners are built from it, read off
+  $G$'s pair factors; the iteration never sees it.
 - **Diagonal block** $\Delta_q$ of channel $q$: diagonal, $w_\ell$ or $1$ or $0$ per level as
   above. Two channels of the same term are orthogonal, so their block of $G$ is $0$.
 - **Cross block** $C_{qr}$ of channels $q, r$ of different terms:
@@ -116,10 +130,10 @@ take. "(not: …)" lists synonyms we don't use.
 
 ## Preconditioning
 
-- **Preconditioner** $M \approx G$: a symmetric PSD $m \times m$ operator; LSMR applies
+- **Preconditioner** $M \approx S$: a symmetric PSD $m_k \times m_k$ operator; LSMR applies
   $M^{-1}$ once per iteration.
 - **Identity** (API: `Off`): $M = I$, unpreconditioned.
-- **Diagonal** (not: Jacobi in prose): $M = \operatorname{diag}(G)$; a zero diagonal entry is
+- **Diagonal** (not: Jacobi in prose): $M = \operatorname{diag}(S)$; a zero diagonal entry is
   inverted to $0$.
 - **Channel pair** (not: factor pair): two channels of different terms; $T$ terms with $c_t$
   channels give $\sum_{t < u} c_t c_u$ pairs. A **factor pair** is the channel pair of two
@@ -130,7 +144,10 @@ take. "(not: …)" lists synonyms we don't use.
 - **Gram factor** $V$ of a pair block: $G_{qr} = VV^\top$ with one column per observation,
   $\sqrt{w_i}\,(u_q(i)\, e_{\ell_q(i)} + u_r(i)\, e_{L_q + \ell_r(i)})$: two nonzeros per
   column (**bipartite factor-width-2 form**).
-- **Subdomain:** the DOFs of one channel pair; its **local operator** is the pair block.
+- **Subdomain:** the unknowns of one channel pair; its **local operator** approximates $S$ there.
+  Two kept channels get $G_{qr}$, which is $S$'s block without $e$'s Schur term
+  $G_{qe} G_{ee}^{+} G_{er}$. A kept channel $q$ with one of $e$'s, $c$, gets $G_{qc}$'s Schur
+  complement onto $q$: $\Delta_q$ less $c$'s share of that term.
 - **Restriction** $R_{qr}$: picks the subdomain's DOFs from a global vector; its transpose, the
   **prolongation**, adds them back.
 - **Overlap count** $c_j$: the number of subdomains containing DOF $j$.
@@ -178,22 +195,22 @@ approx-chol computes each local solve; these are the terms its configuration nam
 
 ## Iteration
 
-- **LSMR** (Fong, Saunders): a Krylov method for $\min \lVert b - Ax \rVert_2$ built on
-  Golub–Kahan bidiagonalization of $A$; $\lVert A^\top r_k \rVert$ decreases monotonically.
+- **LSMR** (Fong, Saunders): a Krylov method for $\min \lVert b - A_r x \rVert_2$ built on
+  Golub–Kahan bidiagonalization of $A_r$; $\lVert A_r^\top r_k \rVert$ decreases monotonically.
 - **Modified LSMR** (not: MLSMR in prose): preconditioned LSMR, bidiagonalizing in the
   $M^{-1}$ inner product (modified Golub–Kahan) with one $M^{-1}$ application per iteration.
 - **Iteration** (not: sweep, which is MAP's): one step of the bidiagonalization and its update
   of $x_k$.
-- **Residual** $r_k = b - Ax_k$; the **normal-equation residual** is $A^\top r_k$.
-- **Relative normal-equation residual** (API: `residual`): $\lVert A^\top r_k \rVert /
-  \lVert A^\top b \rVert$, in $M$'s metric when preconditioned.
+- **Residual** $r_k = b - A_r x_k$; the **normal-equation residual** is $A_r^\top r_k$.
+- **Relative normal-equation residual** (API: `residual`): $\lVert A_r^\top r_k \rVert /
+  \lVert A_r^\top b \rVert$, in $M$'s metric when preconditioned.
 - **Tolerance stop:** the recurrence's estimate meets `tol`, either for the least-squares
-  residual or for the backward error $\lVert A^\top r_k \rVert / (\lVert A \rVert \lVert r_k \rVert)$.
+  residual or for the backward error $\lVert A_r^\top r_k \rVert / (\lVert A_r \rVert \lVert r_k \rVert)$.
 - **Exit audit:** at a tolerance stop, the residual and the unpreconditioned gradient
-  $A^\top r_k$ are recomputed. A **refuted** stop restarts from $x_k$; a stop that survives is
+  $A_r^\top r_k$ are recomputed. A **refuted** stop restarts from $x_k$; a stop that survives is
   **converged**.
 - **False convergence:** a small stopping quantity with a large true one, e.g. when $\ker M$
-  meets $\operatorname{range} A^\top$, where the $M$-metric gradient vanishes but the true one
+  meets $\operatorname{range} A_r^\top$, where the $M$-metric gradient vanishes but the true one
   does not.
 - **Reorthogonalization window** (API: `local_size`): the number of recent basis vectors each
   new one is reorthogonalized against.
