@@ -25,9 +25,9 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "approx-chol"
-version = "0.8.1"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4364eaded1081f7269a8be79898f7ae6ad71a2ba4b900aa1a8e60b5d19351eb"
+checksum = "0d3d661d458c965133e57b6364ba9f378316bbce4e418496cb116a6195c4ae7c"
 dependencies = [
  "dyn-stack",
  "num-traits",
