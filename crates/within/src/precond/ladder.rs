@@ -4,10 +4,13 @@
 use std::time::{Duration, Instant};
 
 use once_cell::sync::OnceCell;
+use schwarz_precond::{
+    mlsmr, EscalationPolicy, IdentityOp, LsmrResult, MlsmrOptions, Operator, SolveError,
+};
 
-use crate::config::{PreconditionerConfig, Rung, Staleness};
+use crate::config::{LsmrOptions, PreconditionerConfig, Rung, Staleness};
 use crate::precond::Preconditioner;
-use crate::system::Gramian;
+use crate::system::{DesignOperator, Gramian};
 use crate::{BuildError, BuildWarning};
 
 /// A rung's settled build: its map, or `None` where it has nothing to act on.
@@ -30,12 +33,30 @@ pub(crate) struct Ladder {
 #[derive(Clone, Copy)]
 pub(crate) struct Current<'l> {
     top: Option<(usize, &'l Preconditioner)>,
-    pub(crate) stall: Option<&'l Staleness>,
+    stall: Option<&'l Staleness>,
 }
 
-impl<'l> Current<'l> {
-    pub(crate) fn map(&self) -> Option<&'l Preconditioner> {
-        self.top.map(|(_, map)| map)
+impl Current<'_> {
+    /// LSMR on `a` from `start` within `maxiter`, on this rung's map (`I` without one), handing
+    /// off on its stall.
+    pub(crate) fn run(
+        &self,
+        a: &DesignOperator<'_>,
+        b: &[f64],
+        lsmr: &LsmrOptions,
+        maxiter: usize,
+        start: Option<&[f64]>,
+    ) -> Result<LsmrResult, SolveError> {
+        let identity = IdentityOp { n: a.ncols() };
+        let m: &dyn Operator = match self.top {
+            Some((_, map)) => map,
+            None => &identity,
+        };
+        let options = MlsmrOptions {
+            escalation: self.stall.map(|s| s as &dyn EscalationPolicy),
+            local_size: lsmr.local_size,
+        };
+        mlsmr(a, b, m, lsmr.tol, maxiter, start, options)
     }
 }
 
