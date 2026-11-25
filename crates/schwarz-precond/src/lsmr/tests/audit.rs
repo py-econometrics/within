@@ -8,14 +8,16 @@ use super::super::{
     lsmr_from_bidiag, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
     MlsmrOptions, NormalEqReference, SolveStart,
 };
-use crate::lsmr::fixtures::{lsmr, DenseOp, DiagOp, FixedIterations};
+use crate::lsmr::fixtures::{lsmr, DenseOp, DiagOp, FixedIterations, OverdeterminedOp};
 use crate::lsmr::IdentityOp;
-use crate::SolveError;
+use crate::{MemStack, Operator, SolveError};
 
-/// Stops on ResidualTolerance at every pass's first step; `true_residuals` scripts each check.
+/// Triggers an audit at every pass's first step; `true_residuals` scripts each check, and
+/// every audit that reaches for it measures `‖Aᵀr‖ = gradient` against `‖A‖₂ ≥ 1`.
 struct ScriptedStream<'a> {
     v: Vec<f64>,
     true_residuals: std::iter::Copied<std::slice::Iter<'a, f64>>,
+    gradient: f64,
 }
 
 impl Bidiagonalization for ScriptedStream<'_> {
@@ -35,8 +37,11 @@ impl Bidiagonalization for ScriptedStream<'_> {
             .next()
             .expect("a scripted residual per pass"))
     }
-    fn plain_gradient(&mut self, _residual_norm: f64) -> Result<Option<Magnitude>, SolveError> {
-        panic!("a residual-tolerance stop must not request a plain-gradient audit")
+    fn plain_gradient(&mut self, _residual_norm: f64) -> Result<Magnitude, SolveError> {
+        Ok(Magnitude::from(self.gradient))
+    }
+    fn norm_floor(&mut self) -> Result<f64, SolveError> {
+        Ok(1.0)
     }
     fn restart(&mut self, _beta: f64) -> Result<BidiagStep, SolveError> {
         Ok(BidiagStep {
@@ -60,15 +65,25 @@ impl EscalationPolicy for CountingPolicy {
     }
 }
 
-/// `tol = 1e-10` against `‖b‖ = 1`, so the gap an honest stop may show is `1e-8`.
+/// `tol = 1e-10` against `‖b‖ = 1`; an audit's gradient leg sees `‖Aᵀr‖ = 1`, which never certifies.
 fn scripted_run(
     true_residuals: &[f64],
+    maxiter: usize,
+    escalation: Option<&dyn EscalationPolicy>,
+) -> LsmrResult {
+    scripted_run_with_gradient(true_residuals, 1.0, maxiter, escalation)
+}
+
+fn scripted_run_with_gradient(
+    true_residuals: &[f64],
+    gradient: f64,
     maxiter: usize,
     escalation: Option<&dyn EscalationPolicy>,
 ) -> LsmrResult {
     let stream = ScriptedStream {
         v: vec![1.0, 2.0],
         true_residuals: true_residuals.iter().copied(),
+        gradient,
     };
     let step1 = BidiagStep {
         alpha: 1.0,
@@ -81,7 +96,7 @@ fn scripted_run(
         &[1.0, 1.0],
         SolveStart {
             x0: None,
-            reference: NormalEqReference::cold(step1, Magnitude::product(step1.alpha, step1.beta)),
+            reference: NormalEqReference::new(None, step1),
         },
         criteria,
         maxiter,
@@ -90,21 +105,31 @@ fn scripted_run(
     .expect("scripted run")
 }
 
-#[rstest]
-#[case::exact(1e-12)]
-#[case::inside_the_gap(1e-9)]
-fn a_stop_the_true_residual_confirms_is_certified(#[case] true_residual: f64) {
-    let r = scripted_run(&[true_residual], 5, None);
+#[test]
+fn a_stop_the_true_residual_confirms_is_certified() {
+    let r = scripted_run(&[1e-12], 5, None);
     assert!(r.converged());
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
     assert_eq!(r.iterations, 1);
-    assert_eq!(r.residual_norm, true_residual);
+    assert_eq!(r.residual_norm, 1e-12);
 }
 
-/// `v` is constant, so each pass adds the same correction on top of the refuted iterate.
+/// A measured `‖Aᵀr‖ / (L‖r‖) = 1e-11` certifies a residual stop that `‖r‖ = 0.5` alone does not, and
+/// the result names the certificate that held.
 #[test]
-fn a_refuted_stop_restarts_from_its_iterate() {
-    let r = scripted_run(&[1.0, 1e-12], 5, None);
+fn a_residual_stop_the_gradient_certifies_reports_the_normal_equation() {
+    let r = scripted_run_with_gradient(&[0.5], 0.5e-11, 5, None);
+    assert!(r.converged());
+    assert_eq!(r.stop_reason, LsmrStopReason::NormalEquationTolerance);
+    assert_eq!(r.iterations, 1);
+    assert_eq!(r.residual_norm, 0.5);
+}
+
+/// `v` is constant, so each pass adds the same correction on top of the refuted iterate. A
+/// residual 10× over the tolerance is refuted, however close it sits to the stream's estimate.
+#[rstest]
+fn a_refuted_stop_restarts_from_its_iterate(#[values(1.0, 1e-9)] refuted: f64) {
+    let r = scripted_run(&[refuted, 1e-12], 5, None);
     assert!(r.converged());
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
     assert_eq!(r.iterations, 2);
@@ -166,7 +191,7 @@ fn a_refused_stop_reports_its_iterates_normal_equation_residual(#[values(1.0, 4.
     assert_eq!(r.normal_eq_residual, 1.0);
 }
 
-/// An unusable `‖Aᵀb‖` falls back to `ζ̄₀ = 2` from `step1 = (2, 1)`, reporting `1.0 / 2`.
+/// An unusable `‖Âᵀb‖` falls back to `ζ̄₀ = 2` from `step1 = (2, 1)`, reporting `1.0 / 2`.
 #[rstest]
 #[case::usable(4.0, 0.25)]
 #[case::zero(0.0, 0.5)]
@@ -178,70 +203,31 @@ fn a_report_only_moves_to_a_usable_reference(#[case] metric: f64, #[case] expect
         beta: 1.0,
     };
     assert_eq!(
-        NormalEqReference::warm(
-            Magnitude::from(metric),
-            Magnitude::from(metric),
-            step1,
-            Magnitude::from(3.0),
-        )
-        .relative(Magnitude::from(1.0)),
+        NormalEqReference::new(Some(Magnitude::from(metric)), step1).relative(Magnitude::from(1.0)),
         expected
     );
 }
 
-#[test]
-fn warm_references_fall_back_independently() {
-    let step1 = BidiagStep {
-        alpha: 2.0,
-        beta: 1.0,
-    };
-
-    let plain_fallback = NormalEqReference::warm(
-        Magnitude::from(4.0),
-        Magnitude::from(0.0),
-        step1,
-        Magnitude::from(3.0),
-    );
-    assert_eq!(
-        plain_fallback.relative(Magnitude::from(1.0)),
-        0.25,
-        "an unusable plain reference must not discard a usable metric reference"
-    );
-    assert_eq!((plain_fallback.plain / Magnitude::from(3.0)).to_f64(), 1.0);
-
-    let metric_fallback = NormalEqReference::warm(
-        Magnitude::from(0.0),
-        Magnitude::from(5.0),
-        step1,
-        Magnitude::from(3.0),
-    );
-    assert_eq!(metric_fallback.relative(Magnitude::from(1.0)), 0.5);
-    assert_eq!((metric_fallback.plain / Magnitude::from(5.0)).to_f64(), 1.0);
-}
-
+/// `tol = 1e-10` against `‖b‖ = 1`: `‖r‖` certifies alone, or `‖Aᵀr‖ / (L‖r‖)` does. A floor below
+/// `‖A‖₂` only refuses more, and nothing unmeasurable certifies.
 #[rstest]
-#[case::vanished_residual(0.0, 1.0, 1.0, 1e-30, true)]
-#[case::absolute_plain_drop(1.0, 1e-9, 1.0, 1e-30, true)]
-#[case::metric_agreement(1.0, 1e-2, 1.0, 1e-4, true)]
-#[case::neither_plain_leg(1.0, 1e-2, 1.0, 1e-6, false)]
-#[case::unmeasurable_plain_audit(1.0, f64::NAN, 1.0, 1e-6, true)]
-fn each_plain_gradient_audit_leg_is_explicit(
+#[case::residual_alone(1e-11, 1.0, 1.0, true)]
+#[case::gradient_meets(1.0, 1e-10, 1.0, true)]
+#[case::gradient_misses(1.0, 1e-9, 1.0, false)]
+#[case::looser_floor_refuses(1.0, 1e-10, 0.5, false)]
+#[case::nan_gradient(1.0, f64::NAN, 1.0, false)]
+#[case::zero_floor(1.0, 0.0, 0.0, false)]
+#[case::nan_residual(f64::NAN, 0.0, 1.0, false)]
+fn each_certificate_leg_is_explicit(
     #[case] residual: f64,
-    #[case] current: f64,
-    #[case] reference: f64,
-    #[case] metric_relative: f64,
+    #[case] normar: f64,
+    #[case] floor: f64,
     #[case] expected: bool,
 ) {
     let criteria = ConvergenceCriteria::new(1.0, 1e-10);
-    assert_eq!(
-        criteria.corroborates_normal_eq(
-            residual,
-            Magnitude::from(current),
-            Magnitude::from(reference),
-            metric_relative,
-        ),
-        expected
-    );
+    let certifies = criteria.residual_certifies(residual)
+        || criteria.gradient_certifies(residual, Magnitude::from(normar), floor);
+    assert_eq!(certifies, expected);
 }
 
 /// `M⁻¹ = diag(1, 1e-20)` cannot certify the solution direction it hides.
@@ -341,4 +327,67 @@ fn a_restarted_pass_gets_its_own_escalation_handler() {
     assert!(r.converged());
     assert_eq!(r.iterations, 2);
     assert_eq!(policy.0.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+/// Delegates to `inner` but reports `floor` as its norm floor.
+struct Floored<'a, A: Operator> {
+    inner: &'a A,
+    floor: f64,
+}
+
+impl<A: Operator> Operator for Floored<'_, A> {
+    fn nrows(&self) -> usize {
+        self.inner.nrows()
+    }
+    fn ncols(&self) -> usize {
+        self.inner.ncols()
+    }
+    fn apply_with(&self, x: &[f64], y: &mut [f64], s: &mut MemStack) -> Result<(), SolveError> {
+        self.inner.apply_with(x, y, s)
+    }
+    fn apply_adjoint_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        s: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.inner.apply_adjoint_with(x, y, s)
+    }
+    fn norm_floor(&self) -> Result<f64, SolveError> {
+        Ok(self.floor)
+    }
+}
+
+/// An inconsistent system stops on its normal equation, which only the operator's floor certifies:
+/// a floor of 0 certifies nothing, so the same solve is refused after its restarts.
+#[rstest]
+#[case::exact_floor(3f64.sqrt(), true)]
+#[case::zero_floor(0.0, false)]
+fn the_operators_floor_certifies_a_normal_equation_stop(
+    #[case] floor: f64,
+    #[case] certifies: bool,
+) {
+    let op = Floored {
+        inner: &OverdeterminedOp,
+        floor,
+    };
+    let r = lsmr(&op, &[1.0, 2.0, 3.0, 5.0], 1e-10, 100, None).expect("solve");
+    assert_eq!(r.converged(), certifies, "{:?}", r.stop_reason);
+    if !certifies {
+        assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
+    }
+}
+
+/// The default floor stays below `‖A‖₂ = max |dᵢ|` up to the rounding of its norms, comes within 1%
+/// of it on a clear gap, stays finite where `‖A‖₂²` would overflow, and is 0 with nothing to apply.
+#[rstest]
+#[case::gap(&[1.0, 2.0, 3.0, 10.0], 10.0)]
+#[case::overflowing_square(&[1e200, 1.0], 1e200)]
+#[case::tiny(&[1e-200, 3e-200], 3e-200)]
+#[case::zero_operator(&[0.0, 0.0], 0.0)]
+#[case::no_columns(&[], 0.0)]
+fn the_default_floor_approaches_the_norm_from_below(#[case] d: &[f64], #[case] norm: f64) {
+    let floor = DiagOp(d.to_vec()).norm_floor().expect("floor");
+    assert!(floor <= norm * (1.0 + 1e-15), "{floor:e} above {norm:e}");
+    assert!(floor >= 0.99 * norm, "{floor:e} far below {norm:e}");
 }

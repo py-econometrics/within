@@ -296,8 +296,9 @@ fn an_aliased_slope_converges(#[case] spec: SlopeSpec) {
     let out = solve_tight(&solver, &panel.y);
     // A floating component grounded by mistake reports a false convergence at an O(1) mean.
     let group_mean = max_abs_group_mean(&solver.design, &out.demeaned);
-    // At δ = 1e-8 no solve reaches 1e-12 (gm ~1e-10); the audit rightly reports it unconverged.
-    let attainable = !matches!(spec, SlopeSpec::NearYearIndex(d) if d == 1e-8);
+    // At δ = 1e-8 and 1e-6 no solve certifies 1e-12: the measured backward error stalls a few times
+    // above it (gm ~1e-10 and ~1e-12), and the audit rightly reports it unconverged (#544).
+    let attainable = !matches!(spec, SlopeSpec::NearYearIndex(d) if d == 1e-8 || d == 1e-6);
     assert!(
         out.converged == attainable && group_mean < 1e-9,
         "converged={}, gm={group_mean:.3e}",

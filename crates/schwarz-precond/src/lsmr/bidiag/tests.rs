@@ -17,8 +17,7 @@ fn cold_stream<'a, A: Operator>(
     local_size: usize,
 ) -> Result<(ModifiedGolubKahan<'a, A, IdentityOp>, BidiagStep), SolveError> {
     let staged = StagedStart::cold(op, identity, b, local_size);
-    let (stream, step1, _) = staged.restart(crate::lsmr::vec_norm(b))?;
-    Ok((stream, step1))
+    staged.restart(crate::lsmr::vec_norm(b))
 }
 
 /// A NaN `vp` clamped to α = 0 via `f64::max`; a product bound overflowed to ∞ or underflowed to 0.

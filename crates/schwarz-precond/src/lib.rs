@@ -83,6 +83,15 @@ pub trait Operator: Send + Sync {
     fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), error::SolveError> {
         self.apply_adjoint_with(x, y, MemStack::new(&mut MemBuffer::new(self.scratch())))
     }
+    /// A floor `L ≤ ‖A‖₂`, which [`mlsmr`] certifies a stop against.
+    ///
+    /// The default runs a few steps of power iteration on `AᵀA` from a fixed start, costing that
+    /// many applies of each side. Override it when something cheaper or tighter is known, such as
+    /// the largest column norm. A loose floor only makes certification stricter; one above `‖A‖₂`
+    /// would certify unsolved stops.
+    fn norm_floor(&self) -> Result<f64, error::SolveError> {
+        lsmr::power_floor(self)
+    }
 }
 
 // Compiles the README usage example as a doctest so it cannot drift from the public API.

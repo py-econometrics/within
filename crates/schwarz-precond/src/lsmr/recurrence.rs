@@ -286,14 +286,12 @@ impl SolutionState {
     }
 }
 
-/// Outcome of a single convergence test: continue iterating or stop.
+/// Outcome of a single convergence test: continue iterating, or audit the iterate.
 pub(super) enum Stop {
-    /// LSMR has not yet met the user-supplied tolerance.
+    /// Neither estimate meets the tolerance.
     Continue,
-    /// `‖r_k‖` estimate fell below absolute tolerance.
-    ResidualTolerance,
-    /// `‖Aᵀ r_k‖` estimate fell below relative tolerance.
-    NormalEquationTolerance,
+    /// The `‖r_k‖` or `‖Aᵀr_k‖` estimate meets it; only measuring `x` can certify a stop.
+    Audit,
 }
 
 /// Immutable stopping criteria for one LSMR run.
@@ -314,70 +312,52 @@ impl ConvergenceCriteria {
     pub(super) fn start(self, alpha1: f64) -> ConvergenceState {
         ConvergenceState {
             criteria: self,
+            alpha: alpha1,
             a_norm: alpha1,
         }
     }
 
-    /// Honest estimate drift is O(ε); a collapsed one misses by orders (van der Vorst & Ye 2000).
-    fn residual_gap(&self) -> f64 {
-        CERTIFICATION_SLACK * self.abs_tol
+    /// Whether a measured `‖r‖` meets the absolute tolerance.
+    pub(super) fn residual_certifies(&self, residual: f64) -> bool {
+        residual <= self.abs_tol
     }
 
-    /// Whether the recomputed residual corroborates the recurrence's own estimate.
-    pub(super) fn corroborates_residual(&self, recomputed: f64, estimate: f64) -> bool {
-        (recomputed - estimate).abs() <= self.residual_gap()
-    }
-
-    /// Whether a plain-metric normal-equation stop survives the exit audit.
-    pub(super) fn corroborates_normal_eq(
-        &self,
-        residual: f64,
-        current: Magnitude,
-        reference: Magnitude,
-        metric_relative: f64,
-    ) -> bool {
-        if residual <= self.residual_gap()
-            || !(current.is_normal() && reference.is_normal() && metric_relative.is_finite())
-        {
-            return true;
-        }
-        let plain_relative = (current / reference).to_f64();
-        plain_relative <= CERTIFICATION_SLACK * self.rel_tol
-            || plain_relative <= CERTIFICATION_SLACK * metric_relative
-    }
-
-    /// An annihilated `α₁` certifies via the residual, or via a lower `‖A‖` bound that overstates.
-    pub(super) fn corroborates(&self, normr: f64, normar: Magnitude, a_norm_below: f64) -> bool {
-        normr <= self.residual_gap()
-            || backward_error(normar, a_norm_below, normr) <= CERTIFICATION_SLACK * self.rel_tol
+    /// Whether measured `‖r‖` and `‖Aᵀr‖` meet the relative tolerance: with `floor ≤ ‖A‖₂`, the
+    /// ratio bounds the true backward error from above.
+    pub(super) fn gradient_certifies(&self, residual: f64, normar: Magnitude, floor: f64) -> bool {
+        backward_error(normar, floor, residual) <= self.rel_tol
     }
 }
 
 /// Mutable convergence observations for one LSMR run.
 pub(super) struct ConvergenceState {
     criteria: ConvergenceCriteria,
-    /// `‖A‖_F` estimate, never squared: `‖A‖²` leaves the double range from `‖A‖ ≈ 1e±154`.
+    /// `α_k`, the diagonal of `B_k`'s column that the next `β_{k+1}` completes.
+    alpha: f64,
+    /// The largest column norm of `B_k` seen so far: a floor under `‖Â‖₂`, so the trigger cannot
+    /// read a backward error smaller than the stream's own. Never squared, which would leave the
+    /// double range from `‖Â‖ ≈ 1e±154`.
     a_norm: f64,
 }
 
 impl ConvergenceState {
     pub(super) fn observe(&mut self, s: BidiagStep) {
-        self.a_norm = self.a_norm.hypot(s.alpha).hypot(s.beta);
+        self.a_norm = self.a_norm.max(self.alpha.hypot(s.beta)).max(s.alpha);
+        self.alpha = s.alpha;
     }
 
-    /// Check both stop criteria against the current scalar state.
+    /// Whether the stream's own estimates trigger an audit.
     pub(super) fn check(&self, r: &LsmrRecurrenceState) -> Stop {
         let unit_residual = r.unit_residual();
-        if r.rhs_norm * unit_residual <= self.criteria.abs_tol {
-            return Stop::ResidualTolerance;
-        }
         // The stream's own backward error; `β₁` cancels, so the `u₁` form stays in range.
         let normar = Magnitude::from(r.normal_eq_qr.normar());
-        let ratio = backward_error(normar, self.a_norm, unit_residual);
-        if ratio <= self.criteria.rel_tol {
-            return Stop::NormalEquationTolerance;
+        if r.rhs_norm * unit_residual <= self.criteria.abs_tol
+            || backward_error(normar, self.a_norm, unit_residual) <= self.criteria.rel_tol
+        {
+            Stop::Audit
+        } else {
+            Stop::Continue
         }
-        Stop::Continue
     }
 }
 
@@ -388,6 +368,3 @@ pub(super) fn backward_error(normar: Magnitude, a_norm: f64, residual: f64) -> f
     }
     (normar / Magnitude::product(a_norm, residual)).to_f64()
 }
-
-/// Collapsed recurrences miss by orders of magnitude; the slack absorbs ordinary estimate drift.
-const CERTIFICATION_SLACK: f64 = 100.0;
