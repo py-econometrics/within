@@ -1,8 +1,8 @@
 //! `D̃`'s products over its term blocks: `y = s ⊙ Σ_t D̃_t x_t`, and `x_t = D̃_tᵀ (s ⊙ v)` summed in
 //! the order term `t`'s `LevelReduction` fixes.
 
+use inflight::parallel::{Pieces, Split, Threads, Workspaces};
 use rayon::prelude::*;
-use schwarz_precond::parallel::{for_each_piece, Pieces, Split, Workspaces};
 use schwarz_precond::MemStack;
 
 use super::OrthogonalDesign;
@@ -125,9 +125,8 @@ pub(super) fn scatter(
         Pieces::new(dst, design.unknowns().starts()),
         folds.carve(stack),
     );
-    for_each_piece(parts, &|i, (block, workspace)| {
-        let (t, block) = (&design.term(i), block.into_items());
-        let stack = MemStack::new(workspace.into_items());
+    Threads::All.for_each_item(parts, |i, (block, workspace)| {
+        let (t, stack) = (&design.term(i), MemStack::new(workspace));
         match scale {
             Some(s) => scatter_block(t, block, &|i| s[i] * src[i], stack),
             None => scatter_block(t, block, &|i| src[i], stack),
@@ -216,7 +215,10 @@ fn scatter_term<const C: usize>(
 /// A column-major `C × L` block as per-level `[f64; C]` slots.
 struct Columns<'a, const C: usize>([&'a mut [f64]; C]);
 
-impl<const C: usize> Split for Columns<'_, C> {
+impl<'a, const C: usize> Split for Columns<'a, C> {
+    /// One level's slot in each column.
+    type Item = [&'a mut f64; C];
+
     fn n_items(&self) -> usize {
         self.0[0].len()
     }
@@ -229,6 +231,10 @@ impl<const C: usize> Split for Columns<'_, C> {
             r
         });
         (Self(left), Self(right))
+    }
+
+    fn into_item(self) -> Self::Item {
+        self.0.map(|column| &mut column[0])
     }
 }
 

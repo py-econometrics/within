@@ -6,10 +6,9 @@ use dyn_stack::{MemStack, StackReq};
 
 use crate::error::SolveError;
 use crate::local_solve::{LocalSolver, SubdomainEntry};
-use crate::parallel::{try_for_each_piece, Pieces, Workspaces};
 use crate::prolongation::Prolongation;
-use crate::threads::Threads;
 use crate::Operator;
+use inflight::parallel::{Pieces, Threads, Workspaces};
 
 /// Persists `n_dofs`, which entries alone cannot recover when some columns are uncovered.
 #[cfg(feature = "serde")]
@@ -148,7 +147,7 @@ impl<S: LocalSolver> SchwarzPreconditioner<S> {
     fn local_budget(&self) -> (Threads, &Workspaces) {
         let [all, one] = Self::LOCAL_BUDGETS;
         let [at_all, at_one] = &self.workspaces;
-        let threads = rayon::current_num_threads().max(1);
+        let threads = all.tasks();
         if self.outer_capacity < threads as f64 * Self::OUTER_CAPACITY_TARGET {
             (all, at_all)
         } else {
@@ -208,13 +207,13 @@ impl<S: LocalSolver> Operator for SchwarzPreconditioner<S> {
             at_one
         };
         let parts = (
-            Pieces::new(&mut outputs, &self.slot_starts),
+            Pieces::new(&mut outputs[..], &self.slot_starts),
             workspaces.carve(stack),
         );
-        try_for_each_piece(parts, &|i, (out, workspace)| {
-            let stack = MemStack::new(workspace.into_items());
+        Threads::All.try_for_each_item(parts, |i, (out, workspace)| {
+            let stack = MemStack::new(workspace);
             self.subdomains[i]
-                .apply_weighted_local(r, out.into_items(), threads, stack)
+                .apply_weighted_local(r, out, threads, stack)
                 .map_err(|source| SolveError::LocalSolveFailed {
                     subdomain: i,
                     source,

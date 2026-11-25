@@ -96,18 +96,16 @@ pub mod domain;
 pub mod error;
 mod local_solve;
 mod lsmr;
-pub mod parallel;
 mod prolongation;
 mod schwarz;
-mod threads;
 
 pub use domain::{PartitionWeights, SubdomainCore};
 pub use dyn_stack::{MemBuffer, MemStack, StackReq};
 pub use error::{BuildError, LocalSolveError, SolveError};
+pub use inflight::parallel::Threads;
 pub use local_solve::{LocalSolver, SubdomainEntry};
 pub use lsmr::{
     mlsmr, EscalationHandler, EscalationPolicy, IdentityOp, LsmrResult, LsmrStopReason,
     MlsmrOptions, Progress, Staleness, StalenessError,
 };
 pub use schwarz::SchwarzPreconditioner;
-pub use threads::Threads;

@@ -13,6 +13,7 @@ categories.workspace = true
 [dependencies]
 schwarz-precond = { workspace = true, features = ["serde"] }
 approx-chol = { version = "0.8.2", features = ["serde"] }
+inflight.workspace = true
 serde = { workspace = true, features = ["rc"] }
 postcard.workspace = true
 ndarray = "0.17"
@@ -22,7 +23,7 @@ thiserror.workspace = true
 rustc-hash = "2"
 
 [dev-dependencies]
-schwarz-precond = { workspace = true, features = ["serde", "testing"] }
+inflight = { workspace = true, features = ["testing"] }
 criterion = { version = "0.7", features = ["html_reports"] }
 rand = "0.10"
 proptest = "1"

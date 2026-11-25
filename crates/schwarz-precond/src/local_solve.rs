@@ -16,7 +16,7 @@ use dyn_stack::{MemStack, StackReq};
 
 use crate::domain::SubdomainCore;
 use crate::error::{BuildError, LocalSolveError};
-use crate::threads::Threads;
+use inflight::parallel::Threads;
 
 /// The `Aᵢ⁻¹` operator: solves the restricted system `Aᵢ = Rᵢ A Rᵢᵀ`, exactly or approximately.
 pub trait LocalSolver: Send + Sync {

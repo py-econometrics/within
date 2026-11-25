@@ -12,19 +12,18 @@ categories.workspace = true
 
 [features]
 serde = ["dep:serde"]
-# Pool helpers for tests in dependent crates.
-testing = []
 
 [dependencies]
 dyn-stack = { version = "0.13.2", default-features = false, features = ["alloc"] }
-rayon.workspace = true
+inflight.workspace = true
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-schwarz-precond = { path = ".", features = ["testing"] }
+inflight = { workspace = true, features = ["testing"] }
 faer.workspace = true
 postcard.workspace = true
+rayon.workspace = true
 rstest.workspace = true
 
 [lints]

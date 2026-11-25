@@ -1,5 +1,6 @@
 //! Caller factor labels ⇄ compact internal level positions.
 
+use inflight::parallel::par_split;
 use rayon::prelude::*;
 use rustc_hash::FxBuildHasher;
 use std::borrow::Cow;
@@ -182,17 +183,8 @@ impl EncodedFactor<'static> {
     /// replace the task-local numbers through a small array per task.
     fn sparse(labels: &[u32]) -> Self {
         let mut positions = vec![0u32; labels.len()];
-        let pieces: Vec<(&mut [u32], Vec<u32>)> =
-            rayon::iter::split((labels, &mut positions[..]), |(labels, positions)| {
-                if labels.len() < 2 {
-                    return ((labels, positions), None);
-                }
-                let mid = labels.len() / 2;
-                let (left, right) = labels.split_at(mid);
-                let (left_positions, right_positions) = positions.split_at_mut(mid);
-                ((left, left_positions), Some((right, right_positions)))
-            })
-            .map(|(labels, positions)| {
+        let pieces: Vec<(&mut [u32], Vec<u32>)> = par_split((labels, &mut positions[..]))
+            .map(|(_, (labels, positions))| {
                 let mut local_id = HashMap::<u32, u32, FxBuildHasher>::default();
                 let mut first_seen = Vec::new();
                 for (&label, position) in labels.iter().zip(positions.iter_mut()) {

@@ -807,6 +807,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "inflight"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdd9926b6e5450b834531877a305b6c0cba8eed06a4f684d17e2fc3e6fc6635f"
+dependencies = [
+ "dyn-stack",
+ "rayon",
+]
+
+[[package]]
 name = "interpol"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1671,10 +1681,10 @@ version = "0.5.0"
 dependencies = [
  "dyn-stack",
  "faer",
+ "inflight",
  "postcard",
  "rayon",
  "rstest",
- "schwarz-precond",
  "serde",
  "thiserror 2.0.21",
 ]
@@ -2242,6 +2252,7 @@ version = "0.5.0"
 dependencies = [
  "approx-chol",
  "criterion",
+ "inflight",
  "ndarray",
  "once_cell",
  "postcard",
