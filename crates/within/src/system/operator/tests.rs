@@ -242,6 +242,70 @@ mod slope_design_tests {
         assert_matches_dense(&design);
     }
 
+    /// A level of `e` long enough to run in pieces: the products match the dense reference, `b` and
+    /// the fit's weighted residual are orthogonal to the level's span, and the products, `b` and
+    /// the fit are bit for bit the same in any pool.
+    #[test]
+    fn a_long_eliminated_level_matches_the_dense_reduced_matrix_in_any_pool() {
+        let n: usize = 100_000;
+        // Level 0 holds 80 000 rows; the rest two each.
+        let e: Vec<u32> = (0..n)
+            .map(|i| i.saturating_sub(79_999).div_ceil(2) as u32)
+            .collect();
+        let f: Vec<u32> = (0..n).map(|i| (i % 7) as u32).collect();
+        let z: Vec<Vec<f64>> = (0..2)
+            .map(|k| (0..n).map(|i| noise(k * n + i)).collect())
+            .collect();
+        let weights: Vec<f64> = (0..n).map(|i| 0.5 + noise(3 * n + i).abs()).collect();
+        let effects = vec![
+            Effect::new(&e, true, [&z[0][..]]).unwrap(),
+            Effect::new(&f, true, [&z[1][..]]).unwrap(),
+        ];
+        let design = Design::new(effects)
+            .unwrap()
+            .reduce(Some(&weights))
+            .unwrap();
+        assert_eq!(design.split.eliminated(), 0, "the fixture eliminates `e`");
+        assert_matches_dense(&design);
+        let x: Vec<f64> = (0..design.unknowns().len()).map(|j| noise(5 + j)).collect();
+        let r: Vec<f64> = (0..n).map(|i| noise(7 * i + 1)).collect();
+        let y: Vec<f64> = (0..n).map(|i| 3.0 + noise(11 * i + 2)).collect();
+        let response = design.response(&y).unwrap();
+        let b = response.rhs().to_vec();
+        let demeaned = response.fit(x.clone(), None).demeaned;
+        // `b` is weighted already; the residual `y − D β` is not.
+        let weighted: Vec<f64> = (demeaned.iter().zip(&weights))
+            .map(|(r, w)| w.sqrt() * r)
+            .collect();
+        for (name, v) in [("b", &b), ("W^{1/2} (y − D β)", &weighted)] {
+            for column in [None, Some(&z[0])] {
+                let terms =
+                    (0..80_000).map(|i| weights[i].sqrt() * column.map_or(1.0, |z| z[i]) * v[i]);
+                let (sum, size) = terms.fold((0.0, 0.0), |(s, a), t: f64| (s + t, a + t.abs()));
+                assert!(
+                    sum.abs() <= 1e-12 * size,
+                    "A_eᵀ {name}: {sum:e} of {size:e}"
+                );
+            }
+        }
+        inflight::parallel::testing::assert_pool_independent(|| {
+            let matrix = SystemMatrix::new(&design);
+            let (mut ax, mut atr) = (vec![0.0; n], vec![0.0; x.len()]);
+            matrix.apply(&x, &mut ax).unwrap();
+            matrix.apply_adjoint(&r, &mut atr).unwrap();
+            let response = design.response(&y).unwrap();
+            let rhs = response.rhs().to_vec();
+            let fit = response.fit(x.clone(), None);
+            (ax.iter()
+                .chain(&atr)
+                .chain(&rhs)
+                .chain(&fit.x)
+                .chain(&fit.demeaned))
+            .map(|v| v.to_bits())
+            .collect::<Vec<_>>()
+        });
+    }
+
     /// Kept slopes that `e`'s slopes span are absorbed on long levels, under heavy-tailed weights:
     /// their cancellation stays below the `rows·ε` cutoff.
     #[test]

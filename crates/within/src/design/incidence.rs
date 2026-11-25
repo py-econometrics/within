@@ -10,9 +10,9 @@ pub(crate) use encoding::FactorEncoding;
 pub use layout::CoefficientLayout;
 pub(crate) use layout::{Column, TermLayout, Unknowns};
 use level_reduction::LevelReduction;
-pub(crate) use level_segments::LevelSegments;
 #[cfg(test)]
 pub(crate) use level_segments::LEVEL_LEAF;
+pub(crate) use level_segments::{FittedMap, FittedSum, LevelSegments};
 use row_index::RowIndex;
 
 use std::borrow::Cow;

@@ -10,7 +10,7 @@ use schwarz_precond::{MemBuffer, MemStack, StackReq};
 
 use super::term::{Rows, TermBlock, TermRow};
 use super::SplitDesign;
-use crate::design::LevelSegments;
+use crate::design::{FittedMap, FittedSum, LevelSegments};
 
 /// `D̃_k`, the kept terms' block, read a row at a time.
 pub(super) trait KeptTerms: Sync {
@@ -144,13 +144,28 @@ impl<T: KeptTerms, R: TermRow> SplitRows<'_, T, R> {
         self.eliminated.row(i, |c, r| f(c, s * r));
     }
 
-    /// `fit = G_l⁻¹ A_{e,l}ᵀ (scale · v)`, `v` level `level`'s segment from row `start`.
+    /// `m = A_eᵀ (scale · v)` over the rows of `v` from row `start`.
     #[inline(always)]
-    fn moments(&self, level: usize, start: usize, v: &[f64], scale: f64, fit: &mut [f64]) {
+    fn moments(&self, start: usize, v: &[f64], scale: f64, m: &mut [f64]) {
         let weight = |i: usize| self.scale(i) * scale;
-        self.eliminated.moments(start, v, weight, fit);
+        self.eliminated.moments(start, v, weight, m);
+    }
+
+    /// `fit = G_l⁻¹ fit`.
+    #[inline(always)]
+    fn solve(&self, level: usize, fit: &mut [f64]) {
         for (f, &g) in fit.iter_mut().zip(self.inverse(level)) {
             *f *= g;
+        }
+    }
+
+    /// `fit = G_l⁻¹ m`, `m = A_{e,l}ᵀ v` in `fit`, refolded from `v`, level `level`'s segment
+    /// from row `start`, if a moment overflowed.
+    #[inline(always)]
+    fn join(&self, level: usize, start: usize, v: &[f64], fit: &mut [f64]) {
+        self.solve(level, fit);
+        if fit.iter().any(|f| !f.is_finite()) {
+            self.refold(level, start, v, fit);
         }
     }
 
@@ -162,25 +177,9 @@ impl<T: KeptTerms, R: TermRow> SplitRows<'_, T, R> {
         v_i - self.scale(i) * f
     }
 
-    /// `fit = G_l⁻¹ A_{e,l}ᵀ v`.
+    /// `segment ← segment − A_e fit` over the rows of `segment` from row `start`.
     #[inline(always)]
-    fn fit(&self, level: usize, start: usize, v: &[f64], fit: &mut [f64]) {
-        self.moments(level, start, v, 1.0, fit);
-    }
-
-    /// [`fit`](Self::fit), refolded at a power-of-two scale if a moment overflowed.
-    #[inline(always)]
-    fn fit_rescued(&self, level: usize, start: usize, v: &[f64], fit: &mut [f64]) {
-        self.fit(level, start, v, fit);
-        if fit.iter().any(|f| !f.is_finite()) {
-            self.refold(level, start, v, fit);
-        }
-    }
-
-    /// `segment ← (I − P_l) segment`, rescued; `fit` keeps `G_l⁻¹ A_{e,l}ᵀ segment`.
-    #[inline(always)]
-    fn project(&self, level: usize, start: usize, segment: &mut [f64], fit: &mut [f64]) {
-        self.fit_rescued(level, start, segment, fit);
+    fn remove_fit(&self, start: usize, segment: &mut [f64], fit: &[f64]) {
         for (k, v) in segment.iter_mut().enumerate() {
             *v = self.remove(start + k, *v, fit);
         }
@@ -195,7 +194,8 @@ impl<T: KeptTerms, R: TermRow> SplitRows<'_, T, R> {
             return;
         }
         let exponent = (peak.log2().floor() as i32).clamp(-1022, 1022);
-        self.moments(level, start, v, 2f64.powi(-exponent), fit);
+        self.moments(start, v, 2f64.powi(-exponent), fit);
+        self.solve(level, fit);
         let unscale = 2f64.powi(exponent);
         fit.iter_mut().for_each(|f| *f *= unscale);
     }
@@ -208,40 +208,32 @@ impl<T: KeptTerms, R: TermRow> SplitRows<'_, T, R> {
 
     /// `y = (I − P_e) A_k x`, rescued.
     pub(super) fn map_projected(&self, y: &mut [f64], stack: &mut MemStack, x: &[f64]) {
-        let level = |level: usize, start: usize, segment: &mut [f64], fit: &mut [f64]| {
-            for (k, y) in segment.iter_mut().enumerate() {
-                *y = self.dot(start + k, x);
-            }
-            self.project(level, start, segment, fit);
-        };
-        self.segments.map(y, self.width(), stack, &level);
+        let pass = ProjectMap { rows: self, x };
+        self.segments
+            .map_fitted(y, self.width(), stack, &pass, None);
     }
 
     /// `out = A_kᵀ (I − P_e) v`, unrescued.
     pub(super) fn sum_projected(&self, out: &mut [f64], stack: &mut MemStack, v: &[f64]) {
-        let level = |level: usize, rows: Range<usize>, acc: &mut [f64], fit: &mut [f64]| {
-            self.fit(level, rows.start, &v[rows.clone()], fit);
-            for i in rows {
-                self.add(i, self.remove(i, v[i], fit), acc);
-            }
-        };
-        self.segments.sum(out, self.width(), stack, &level);
+        let pass = ProjectSum { rows: self, v };
+        self.segments.sum_fitted(out, self.width(), stack, &pass);
     }
 
     /// `v ← (I − P_e) v` twice, rescued, the second pass removing what the first left in
     /// rounding. Returns `G_ee⁻¹ A_eᵀ v`, both passes' fits summed, level-major.
     pub(super) fn partial_out(&self, v: &mut [f64]) -> Vec<f64> {
         let width = self.width();
-        let mut fits = vec![0.0; self.inverse.len()];
-        let level = |second: &mut Vec<f64>, level, start, segment: &mut [f64], fit: &mut [f64]| {
-            self.project(level, start, segment, fit);
-            self.project(level, start, segment, second);
-            for (f, s) in fit.iter_mut().zip(second.iter()) {
-                *f += s;
-            }
-        };
-        (self.segments).map_levels(v, &mut fits, width, || vec![0.0; width], &level);
-        fits
+        let mut buffer = MemBuffer::new(self.segments.scratch(0, width));
+        let mut fits = [vec![0.0; self.inverse.len()], vec![0.0; self.inverse.len()]];
+        for fits in &mut fits {
+            let (pass, stack) = (PartialOut { rows: self }, MemStack::new(&mut buffer));
+            (self.segments).map_fitted(v, width, stack, &pass, Some(fits));
+        }
+        let [mut first, second] = fits;
+        for (f, s) in first.iter_mut().zip(&second) {
+            *f += s;
+        }
+        first
     }
 
     /// `W^{1/2} y − A_k x`.
@@ -302,6 +294,79 @@ impl<T: KeptTerms, R: TermRow> SplitRows<'_, T, R> {
             }
         };
         (self.segments).sum(out, 3 * n, MemStack::new(&mut buffer), &level);
+    }
+}
+
+/// [`SplitRows::map_projected`]'s pass.
+struct ProjectMap<'a, 's, T, R> {
+    rows: &'a SplitRows<'s, T, R>,
+    x: &'a [f64],
+}
+
+impl<T: KeptTerms, R: TermRow> FittedMap for ProjectMap<'_, '_, T, R> {
+    #[inline]
+    fn moments(&self, _: usize, start: usize, segment: &mut [f64], m: &mut [f64]) {
+        for (k, y) in segment.iter_mut().enumerate() {
+            *y = self.rows.dot(start + k, self.x);
+        }
+        self.rows.moments(start, segment, 1.0, m);
+    }
+
+    #[inline]
+    fn fit(&self, level: usize, start: usize, segment: &[f64], m: &mut [f64]) {
+        self.rows.join(level, start, segment, m);
+    }
+
+    #[inline]
+    fn apply(&self, _: usize, start: usize, segment: &mut [f64], fit: &[f64]) {
+        self.rows.remove_fit(start, segment, fit);
+    }
+}
+
+/// [`SplitRows::partial_out`]'s pass: `v ← (I − P_e) v`, rescued.
+struct PartialOut<'a, 's, T, R> {
+    rows: &'a SplitRows<'s, T, R>,
+}
+
+impl<T: KeptTerms, R: TermRow> FittedMap for PartialOut<'_, '_, T, R> {
+    #[inline]
+    fn moments(&self, _: usize, start: usize, segment: &mut [f64], m: &mut [f64]) {
+        self.rows.moments(start, segment, 1.0, m);
+    }
+
+    #[inline]
+    fn fit(&self, level: usize, start: usize, segment: &[f64], m: &mut [f64]) {
+        self.rows.join(level, start, segment, m);
+    }
+
+    #[inline]
+    fn apply(&self, _: usize, start: usize, segment: &mut [f64], fit: &[f64]) {
+        self.rows.remove_fit(start, segment, fit);
+    }
+}
+
+/// [`SplitRows::sum_projected`]'s pass.
+struct ProjectSum<'a, 's, T, R> {
+    rows: &'a SplitRows<'s, T, R>,
+    v: &'a [f64],
+}
+
+impl<T: KeptTerms, R: TermRow> FittedSum for ProjectSum<'_, '_, T, R> {
+    #[inline]
+    fn moments(&self, _: usize, rows: Range<usize>, m: &mut [f64]) {
+        self.rows.moments(rows.start, &self.v[rows], 1.0, m);
+    }
+
+    #[inline]
+    fn fit(&self, level: usize, m: &mut [f64]) {
+        self.rows.solve(level, m);
+    }
+
+    #[inline]
+    fn apply(&self, _: usize, rows: Range<usize>, fit: &[f64], acc: &mut [f64]) {
+        for (i, &v_i) in rows.clone().zip(&self.v[rows]) {
+            self.rows.add(i, self.rows.remove(i, v_i, fit), acc);
+        }
     }
 }
 

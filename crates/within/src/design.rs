@@ -10,7 +10,9 @@ pub use effect::Effect;
 pub use incidence::CoefficientLayout;
 #[cfg(test)]
 pub(crate) use incidence::LEVEL_LEAF;
-pub(crate) use incidence::{Column, Incidence, LevelSegments, TermIncidence, TermLayout, Unknowns};
+pub(crate) use incidence::{
+    Column, FittedMap, FittedSum, Incidence, LevelSegments, TermIncidence, TermLayout, Unknowns,
+};
 
 use crate::BuildError;
 use ndarray::{ArrayView2, Axis};
