@@ -7,23 +7,47 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- Long weighted Gram diagonals and cross-table cells use compensated accumulation, avoiding roundoff-driven Laplacian validation failures and loss of signed cell contributions.
+- Long weighted Gram diagonals use compensated accumulation.
+- Weights near the float range are scaled by a power of two, so a level's weight sum stays finite.
+
+### Added
+
+- Python: `solve`, `solve_batch`, `Design`, `Solver`, `Solver.solve`, `Solver.solve_batch` and `Preconditioner.apply` take `threads=`: the call runs on a pool of that many threads, at most the available parallelism, built on first use and reused by later calls with the same count. Results are the same at any count (#511).
 
 ### Changed
 
 - **BREAKING:** Rust `ApproxSchurConfig::split` is now `NonZeroU32`, so a zero split factor cannot be constructed or deserialized. Python keeps its integer API and `ValueError` for zero; positive serialized values are unchanged (#426).
-
-- **BREAKING:** `schwarz_precond::PartitionWeights::Uniform` is a unit variant; `PartitionWeights::len` and `is_empty` are removed. Uniform weights take their shape from `SubdomainCore::n_local`; only explicit weights carry a length. The serialized uniform variant no longer carries a count; the wire-format fixture moves v20 → v21; v20, v19 and v12 remain rejected-payload controls. The fixture number is not a runtime serialization envelope (#425).
-
-- Levels with no cross-factor entries in a channel pair are batched into diagonal Schwarz subdomains per side instead of one subdomain each, cutting per-subdomain build and apply overhead without changing the preconditioner.
+- **BREAKING:** Python 3.9 is no longer supported; wheels are `cp310-abi3`.
+- **BREAKING:** the hidden `Design::new_unsorted` is removed: every design sorts its rows by its dominant term. Designs above `u32::MAX` rows are sorted too, and their unsorted terms split their scatter by level like smaller ones; row indices are 4 bytes while every row fits `u32`.
+- A `Design` fixes each term's scatter split once: solvers built from one design under different weights (IRLS) no longer re-sort its unsorted terms.
+- `CoefficientLayout` equality also compares which of a term's columns is the intercept.
+- A solver releases a design's raw slopes once it has whitened them, unless the caller still shares the design: 77 MB less peak memory at 5M rows with two slopes.
+- Slope whitening's row passes run in parallel within a term, bit-identical at any thread count: per-level sums, the design adjoint included, combine in one fixed tree set by the data, with row-split leaves of `4·L` rows whatever the state size (#515).
+- **BREAKING:** `schwarz_precond::lsmr` is removed; `mlsmr` with `IdentityOp` runs unpreconditioned LSMR.
+- **BREAKING:** `schwarz_precond::mlsmr` takes its start as a `start: Option<&[f64]>` argument after `maxiter`, in place of `MlsmrOptions::warm_start`; `maxiter` caps this run alone.
+- **BREAKING:** `LsmrResult::converged` is a method derived from `stop_reason`, no longer a field.
+- **BREAKING:** an escalation that fires on a run's last permitted iteration stops with `MaxIterations`, not `Escalated`: no budget is left to hand on.
+- In `solve_batch` under `Adaptive`, each right-hand side moves to the rung above on its own stall instead of waiting for the others; the first to stall builds it. Results are bit-identical.
+- **BREAKING:** `schwarz_precond::PartitionWeights::Uniform` is a unit variant; `PartitionWeights::len` and `is_empty` are removed. Uniform weights take their shape from `SubdomainCore::n_local`; only explicit weights carry a length. The serialized uniform variant no longer carries a count; the wire-format fixture moves v20 → v22; v21, v20 and v12 remain rejected-payload controls. The fixture number is not a runtime serialization envelope (#425).
+- Schwarz subdomains are factored by approx-chol 0.8 from each channel pair's factor-width-2 Gram factor `V`, one column per observation: sign folding, dominance scaling, floating detection and the Schur complement move into approx-chol (#481). Each channel pair is one subdomain whose local solve is approx-chol's block-diagonal approximate inverse over the pair's components; a local solve uses nested threads whenever it reports work (#495).
+- **BREAKING:** `BuildWarning::UnscalableComponent` no longer carries `iterations` (#495).
+- **BREAKING:** `ApproxSchurConfig::seed` (Python `seed=`) is removed; the Schur sampler draws from `ApproxCholConfig::seed`.
+- **BREAKING:** `ScalingConfig::tolerance` must lie in `[0, 1)`, else `BuildError::InvalidScalingTolerance`.
 - **BREAKING:** `ReductionStrategy` is removed: the `reduction` field of `PreconditionerConfig::Additive` and `::Adaptive`, Python's `reduction=` argument and `within.config.ReductionStrategy`, and the strategy argument of `SchwarzPreconditioner::new`/`with_n_dofs` with its `reduction_strategy()` getter. Overlapping subdomain outputs always sum in subdomain order (#472).
-- **BREAKING:** `schwarz_precond::LocalSolver::solve_local(x, workspace, allow_inner_parallelism)` solves in place, and the required `workspace_len()` replaces `scratch_size()`. `SubdomainEntry::{core, is_empty, scratch_size, apply_weighted_into_with_scratch, apply_weighted_into_atomic}`, `SubdomainCore::{restrict_weighted, prolongate_weighted_add, prolongate_weighted_add_atomic}`, `BuildError::ScratchSizeTooSmall` and `SolveError::Synchronization` are removed.
+- **BREAKING:** `schwarz_precond::LocalSolver::solve_local(x, threads, stack)` solves in place under a thread budget `Threads` (replacing `allow_inner_parallelism: bool`) with scratch from a caller-owned `MemStack`, and the required `scratch(threads) -> StackReq` replaces `scratch_size()`; `schwarz_precond` re-exports dyn-stack's `MemBuffer`, `MemStack` and `StackReq` (#509). `SubdomainEntry::{core, is_empty, scratch_size, apply_weighted_into_with_scratch, apply_weighted_into_atomic}`, `SubdomainCore::{restrict_weighted, prolongate_weighted_add, prolongate_weighted_add_atomic}`, `BuildError::ScratchSizeTooSmall` and `SolveError::Synchronization` are removed.
 - **BREAKING:** The serialized `Preconditioner` wire format moved v19 → v20; 0.4.0 bytes no longer decode.
+- **BREAKING:** A `Preconditioner` is a built map plus the configuration whose ladder it belongs to: `variant_name()` names the map, so an unescalated `Adaptive` handle reports `"Diagonal"`, and `config()` of an escalated one returns its `Adaptive` configuration. Reusing either resumes its ladder as before. The wire-format fixture moves v22 → v23 (#427).
+- **BREAKING:** The Schwarz settings are one public type, `Schwarz { local_solver }`: `PreconditionerConfig::Additive { local_solver }` is now `PreconditionerConfig::Schwarz(Schwarz { local_solver })`, and `Adaptive { local_solver, stall }` is `Adaptive { stall, schwarz }`. Python's `PreconditionerConfig.Additive` and `.Adaptive` are unchanged (#427).
+- Slope whitening folds a term's slope columns together, four means and six Gram entries per row pass instead of one accumulator each: `Solver::new` is 10–19% faster with two or more slopes, bit-identical.
+- **BREAKING:** an invalid response is `WithinError::ResponseLengthMismatch { expected, got }` or `WithinError::InvalidResponse { index, value }`, like the weight errors, instead of `SolveError::InvalidInput` with a message naming `Solver::solve`. Python still raises `ValueError`.
 
 ### Fixed
 
+- A Schwarz apply on a stack sized in a smaller Rayon pool runs fewer tasks at once instead of panicking.
 - A solve returns bitwise-identical coefficients, demeaned response, residual and iteration count at any thread count, run after run: LSMR inner products, the Schwarz prolongation and the design adjoint sum in an order fixed by the data, never by Rayon's split. Repeated `Adaptive` solves on one `Solver` may still differ (#370) (#472).
+- Whitened slopes are orthonormal within each level to rounding: slopes are centred on a double-word level mean and whitened twice (CholeskyQR2), removing errors of order eps·|mean|/sd and eps·κ(G). A slope whose within-level spread sits at its mean's rounding is now reported unidentified (#514).
 - LSMR now audits normal-equation tolerance exits in the plain metric. Stops hidden by singular or deflating preconditioners restart and may end in `FalseConvergence` (#389; addresses part of #455).
+- A term without slopes reports the intercept of a level whose rows all weigh zero in `unidentified`, as slope terms already did.
 
 ## [0.4.0] - 2026-10-09
 

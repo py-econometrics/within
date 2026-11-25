@@ -2,7 +2,6 @@ use std::error::Error;
 
 use ndarray::Array2;
 use rstest::rstest;
-use schwarz_precond::SolveError;
 use within::{
     solve, solve_batch, BuildError, Design, Effect, LocalSolverConfig, LsmrOptions,
     PreconditionerConfig, Solver, Staleness, WithinError,
@@ -105,38 +104,23 @@ fn test_non_finite_response_rejected() {
 
     let y = [1.0, f64::NAN, 3.0];
     match solve(cats.view(), &y, None, &params, &precond).unwrap_err() {
-        WithinError::Solve(SolveError::InvalidInput { message, .. }) => {
-            assert!(
-                message.contains("index 1"),
-                "message names the index: {message}"
-            );
-        }
-        other => panic!("Expected Solve(InvalidInput) via solve(), got: {other:?}"),
+        WithinError::InvalidResponse { index, .. } => assert_eq!(index, 1),
+        other => panic!("Expected InvalidResponse via solve(), got: {other:?}"),
     }
 
     // The persistent Solver API funnels through the same guard, so it cannot be bypassed.
     let solver = Solver::new(cats.view(), None, &precond).expect("solver");
     match solver.solve(&y, &params).unwrap_err() {
-        WithinError::Solve(SolveError::InvalidInput { message, .. }) => {
-            assert!(
-                message.contains("index 1"),
-                "message names the index: {message}"
-            );
-        }
-        other => panic!("Expected Solve(InvalidInput) via Solver::solve(), got: {other:?}"),
+        WithinError::InvalidResponse { index, .. } => assert_eq!(index, 1),
+        other => panic!("Expected InvalidResponse via Solver::solve(), got: {other:?}"),
     }
 
     // solve_batch funnels every column through Solver::solve; the bad value is in the 2nd RHS.
     let good = [1.0, 2.0, 3.0];
     let bad = [1.0, 2.0, f64::INFINITY];
     match solve_batch(cats.view(), &[&good[..], &bad[..]], None, &params, &precond).unwrap_err() {
-        WithinError::Solve(SolveError::InvalidInput { message, .. }) => {
-            assert!(
-                message.contains("index 2"),
-                "message names the index: {message}"
-            );
-        }
-        other => panic!("Expected Solve(InvalidInput) via solve_batch(), got: {other:?}"),
+        WithinError::InvalidResponse { index, .. } => assert_eq!(index, 2),
+        other => panic!("Expected InvalidResponse via solve_batch(), got: {other:?}"),
     }
 }
 
@@ -170,30 +154,19 @@ fn test_solver_accepts_slope_bearing_design_alongside_other_terms() {
     Solver::new(design, None, None).expect("signed routing builds");
 }
 
-// One wiring check per enum: From conversions and the transparent source() forward.
-
 #[test]
-fn test_within_error_from_build_error() {
-    let inner = BuildError::EmptyObservations;
-    let e: WithinError = inner.into();
-    match e {
-        WithinError::Build(BuildError::EmptyObservations) => {}
-        other => panic!("expected Build(EmptyObservations), got: {:?}", other),
+fn test_response_length_mismatch_rejected() {
+    let cats = Array2::from_shape_vec((3, 1), vec![0u32, 1, 2]).expect("cats");
+    let solver = Solver::new(cats.view(), None, None).expect("solver");
+    match solver.solve(&[1.0, 2.0], None).unwrap_err() {
+        WithinError::ResponseLengthMismatch { expected, got } => {
+            assert_eq!((expected, got), (3, 2))
+        }
+        other => panic!("Expected ResponseLengthMismatch, got: {other:?}"),
     }
 }
 
-#[test]
-fn test_within_error_from_solve_error() {
-    let inner = SolveError::InvalidInput {
-        context: "test",
-        message: "test".to_string(),
-    };
-    let e: WithinError = inner.into();
-    match e {
-        WithinError::Solve(_) => {}
-        other => panic!("expected Solve, got: {:?}", other),
-    }
-}
+// The transparent source() forward.
 
 #[test]
 fn test_within_error_source_chains_through_transparent_wrapper() {
@@ -211,7 +184,7 @@ fn test_within_error_source_chains_through_transparent_wrapper() {
 /// silently — no `UnscalableComponent` under `Error`, and no `BuildWarning` under `Warn` either.
 #[rstest]
 fn test_invalid_local_solver_rejected(
-    #[values(-1e-9, f64::NAN, f64::INFINITY)] value: f64,
+    #[values(-1e-9, 1.0, f64::NAN, f64::INFINITY)] value: f64,
     #[values(false, true)] adaptive: bool,
     #[values(1, 2)] n_factors: usize,
 ) {
@@ -221,11 +194,11 @@ fn test_invalid_local_solver_rejected(
     local_solver.scaling.tolerance = value;
     let precond = if adaptive {
         PreconditionerConfig::Adaptive {
-            local_solver,
             stall: Staleness::try_new(4, 0.9).expect("stall"),
+            schwarz: within::Schwarz { local_solver },
         }
     } else {
-        PreconditionerConfig::Additive { local_solver }
+        PreconditionerConfig::Schwarz(within::Schwarz { local_solver })
     };
     let mut effects = vec![Effect::new(&f, true, []).expect("f")];
     if n_factors == 2 {

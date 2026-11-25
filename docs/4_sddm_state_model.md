@@ -30,23 +30,23 @@ $$
 3. $A^\top b \in \operatorname{range}(G)$: the normal equations are always
    consistent.
 
-**whiten** acts on the problem itself, before anything else forms: per level
+**orthogonalize** acts on the problem itself, before anything else forms: per level
 $\ell$ of each slope-bearing term (pivoted Gram–Schmidt, slopes centered on
 the intercept),
 
 $$
-M_\ell := \sum_{o \in \ell} w\, c\,c^\top = R_\ell^\top \Delta_\ell R_\ell ,\qquad
-D \mapsto D^\circ = D\,R^{-1} \ \text{blockwise}.
+M_\ell := \sum_{o \in \ell} w\, c\,c^\top ,\qquad R_\ell^\top M_\ell R_\ell = \Delta_\ell ,\qquad
+D \mapsto D^\circ = D\,R \ \text{blockwise}.
 $$
 
-Pullback $\gamma = R^{-1}\hat\gamma$, applied once at return; $\tilde v$
+Pullback $\gamma = R\hat\gamma$, applied once at return; $\tilde v$
 invariant. $M_\ell u = 0$ ⇒ $u$ is a zero row of the whole Gramian ⇒ exits
 here as an exact-zero column; the min-norm iteration returns exact-$0$
 coefficients. Only cross-channel *orthogonality* is load-bearing (it makes
 **split** exact); the leftover positive per-level scalings ($\Delta_\ell$)
 commute into **scale** — vacuous for plain pairs.
 
-Both lanes are whitened:
+Both lanes are orthogonalized:
 
 $$
 \begin{aligned}
@@ -82,7 +82,7 @@ $$
 |---|---|
 | **G∘** | PSD; channels orthogonal within each level (slope channels orthonormal); cross-factor blocks bipartite, assembled from rank-1 stamps $w\,\tilde c_f \tilde c_g^\top$ |
 | **P** | connected principal submatrix on *all* channels of two factors ≃ matrix-weighted bipartite Laplacian, rank-1 PSD block weights |
-| **B** | member: one channel per factor, one connected component or a one-sided batch of isolated levels ($C = 0$); $\begin{bmatrix} D_q & C \\ C^\top & D_r \end{bmatrix}$, $D$ diagonal, $C$ signed |
+| **B** | member: one channel per factor, one connected component (an isolated level is a one-level component); $\begin{bmatrix} D_q & C \\ C^\top & D_r \end{bmatrix}$, $D$ diagonal, $C$ signed |
 | **S±** | signed SDD; row surplus explicit as ground-edge weight |
 | **L₊** | grounded Laplacian ≡ SDDM; *floating* ($\ker = \mathbf{1}$) or *grounded* (PD) |
 | **𝓛** | $\mathcal{L}\mathcal{L}^\top = X$ [exact] or $\mathbb{E}[\mathcal{L}\mathcal{L}^\top] = X$ [sampled], $X$ the source; rank = source, surely |
@@ -99,7 +99,7 @@ it).
 
 | edge | domain → codomain | action | tag | pullback |
 |---|---|---|---|---|
-| whiten | problem → whitened problem | per-level congruence $R^{-1}$ | exact | $\gamma = R^{-1}\hat\gamma$ at return |
+| orthogonalize | problem → orthogonalized problem | per-level congruence $R$ | exact | $\gamma = R\hat\gamma$ at return |
 | restrict | G∘ → P | principal submatrix, one factor pair | exact¹ | — |
 | split | P → {B} | one member per channel pair, per component; exact partition of coupling; members overlap on shared channels | exact | via recompose |
 | validate | plain B → L₊ | check row sums ≡ diagonals (roundoff); adopt $\sigma = (\mathbf{1}_q, -\mathbf{1}_r)$ | exact | $x = \sigma \circ \hat x$ |
@@ -134,8 +134,8 @@ Boundaries (first-class, not omissions):
 ```mermaid
 flowchart TD
     RAW["min ‖W½(v − Dγ)‖  per FWL target v"]
-    WHITE["whitened problem"]
-    RAW -->|"whiten — γ = R⁻¹γ̂"| WHITE
+    WHITE["orthogonalized problem"]
+    RAW -->|"orthogonalize — γ = Rγ̂"| WHITE
 
     OP["A = W½D∘"]
     GW["G∘ = AᵀA"]
@@ -255,7 +255,7 @@ which problem is solved, invisibly.
   derivation, falsification experiments, checked against implementation);
   kernel rules for the preconditioned bidiagonalization (derivation, numerics,
   implementation); end-to-end edge audit against the implementation
-  (problem-level whiten, per-member classification, validate/scale/switch/
+  (problem-level orthogonalization, per-member classification, validate/scale/switch/
   clamp with explicit ground surplus, bipartite eliminate, dense/anchored
   factor, pseudo-solve chain incl. grounding gauge, PoU recompose).
 - **Standard, adopted** — FWL and residual invariance; congruences (Sylvester);

@@ -325,3 +325,28 @@ fn test_repeated_solve_is_deterministic() {
         assert_eq!(a, b, "x[{i}] differs between two solves: {} vs {}", a, b);
     }
 }
+
+/// Each weight is finite but the level's sum `Σw` is not.
+#[test]
+fn weights_near_the_float_range_keep_the_fit() {
+    let categories = array![[0u32], [0]];
+    let lsmr = LsmrOptions {
+        tol: 1e-12,
+        ..LsmrOptions::default()
+    };
+    let result = solve(
+        categories.view(),
+        &[1.0, 1.0],
+        Some(&[1e308, 1e308]),
+        &lsmr,
+        &PreconditionerConfig::Diagonal,
+    )
+    .expect("solve");
+    assert!(result.converged);
+    assert!((result.x[0] - 1.0).abs() <= 1e-14, "{:?}", result.x);
+    assert!(
+        result.demeaned.iter().all(|d| d.abs() <= 1e-14),
+        "{:?}",
+        result.demeaned
+    );
+}

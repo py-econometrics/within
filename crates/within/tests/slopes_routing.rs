@@ -53,7 +53,7 @@ fn two_factor_slope_solves_with_bounded_iterations() {
 
 #[test]
 fn unit_trends_plus_time_effects_boundary() {
-    // Odd T zeroes the whitened trend mid-period, so the signed pair keeps a live 1×1 route.
+    // Odd T zeroes the orthogonalized trend mid-period, so the signed pair keeps a live 1×1 route.
     let (n_units, n_times) = (30usize, 9usize);
     let n = n_units * n_times;
     let unit: Vec<u32> = (0..n).map(|i| (i / n_times) as u32).collect();
@@ -216,12 +216,12 @@ fn surplus_component_sampled_matches_exact_reduction() {
             Effect::new(&f, false, [&z[..]]).expect("slope effect"),
             Effect::new(&g, true, []).expect("plain effect"),
         ];
-        let config = PreconditionerConfig::Additive {
+        let config = PreconditionerConfig::Schwarz(within::Schwarz {
             local_solver: within::config::LocalSolverConfig {
                 schur,
                 ..Default::default()
             },
-        };
+        });
         Solver::new(effects, None, config)
             .expect("build")
             .solve(&y, &LsmrOptions::default())
@@ -313,7 +313,6 @@ fn singleton_level_in_non_first_slope_term_solves_under_additive_schwarz() {
     // A dropped n_dofs would trip Solver::new's dimension check after the round-trip.
     let bytes = postcard::to_stdvec(precond).expect("serialize");
     let restored: Preconditioner = postcard::from_bytes(&bytes).expect("deserialize");
-    assert_eq!(restored.ncols(), solver.n_dofs());
     let reused = Solver::new(effects(), None, restored)
         .expect("reused preconditioner accepted")
         .solve(&y, &LsmrOptions::default())

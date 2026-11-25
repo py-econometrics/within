@@ -12,8 +12,8 @@ mod tests;
 
 use super::finite;
 use super::magnitude::{exponent, ldexp, Magnitude};
-use crate::fold::{fold, Split};
-use crate::{Operator, SolveError};
+use crate::parallel::{fold, Split};
+use crate::{MemBuffer, MemStack, Operator, SolveError, StackReq};
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
@@ -195,8 +195,9 @@ fn residual_into<A: Operator + ?Sized>(
     x: &[f64],
     rhs: &[f64],
     u: &mut [f64],
+    stack: &mut MemStack,
 ) -> Result<f64, SolveError> {
-    operator.apply(x, u)?;
+    operator.apply_with(x, u, stack)?;
     Ok(axpy_with_norm(u, rhs, -1.0))
 }
 
@@ -267,24 +268,6 @@ impl<const L: usize> WindowRing<L> {
     }
 }
 
-/// Euclidean windowed MGS over the single stored `v` lane, used by [`GolubKahan`].
-impl WindowRing<1> {
-    /// MGS sweep over stored slots oldest-first, subtracting each projection of `y`.
-    fn reorthogonalize(&self, y: &mut [f64]) {
-        for slot in self.chrono_slots() {
-            let v_j = self.lane(0, slot);
-            let c = par_dot(y, v_j);
-            axpby(y, v_j, -c, 1.0);
-        }
-    }
-
-    /// Copy `v` into the next slot, advancing the ring.
-    fn push(&mut self, v: &[f64]) {
-        let slot = self.advance();
-        self.lane_mut(0, slot).copy_from_slice(v);
-    }
-}
-
 /// M-weighted windowed MGS: `v` is M-orthogonal, so the coefficient is `⟨v_new, p̃_j⟩`.
 impl WindowRing<2> {
     /// Subtracts `c = ⟨v, p̃_j⟩` from both `v` and `p̃`.
@@ -346,11 +329,12 @@ fn adjoint_image<A: Operator + ?Sized>(
     rhs_norm: f64,
     unit: &mut [f64],
     g: &mut [f64],
+    stack: &mut MemStack,
 ) -> Result<AdjointImage, SolveError> {
     // Scaling first flushes the entries far below `‖rhs‖`, which `Aᵀ` may amplify back into range.
     let k = exponent(rhs_norm);
     if rhs_norm.is_normal() {
-        operator.apply_adjoint(rhs, g)?;
+        operator.apply_adjoint_with(rhs, g, stack)?;
         let g_norm = par_norm(g);
         if k == 0 || g_norm.is_normal() {
             return Ok(AdjointImage {
@@ -364,7 +348,7 @@ fn adjoint_image<A: Operator + ?Sized>(
     unit.iter_mut()
         .zip(rhs)
         .for_each(|(u, &r)| *u = ldexp(r, -k));
-    operator.apply_adjoint(unit, g)?;
+    operator.apply_adjoint_with(unit, g, stack)?;
     Ok(AdjointImage {
         k,
         g_norm: par_norm(g),
@@ -398,86 +382,14 @@ pub(super) trait Bidiagonalization {
     }
 }
 
-impl<A: Operator + ?Sized> Bidiagonalization for GolubKahan<'_, A> {
-    fn step(&mut self) -> Result<BidiagStep, SolveError> {
-        self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
-        let beta = finite(
-            axpy_with_norm(&mut self.bufs.u, &self.bufs.av, -self.alpha),
-            "β",
-        )?;
-        if beta == 0.0 {
-            // Lucky breakdown: zero `v` so `solution.update` contributes nothing.
-            self.bufs.v.fill(0.0);
-            self.alpha = 0.0;
-            return Ok(BidiagStep { alpha: 0.0, beta });
-        }
-        normalize(&mut self.bufs.u, beta);
-
-        self.operator
-            .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
-        let mut alpha = axpy_with_norm(&mut self.bufs.v, &self.bufs.atu, -beta);
-
-        // MGS runs before normalization, so α must be re-derived from the corrected `v`.
-        if let Some(reorth) = &self.bufs.local_reorth {
-            reorth.reorthogonalize(&mut self.bufs.v);
-            alpha = par_norm(&self.bufs.v);
-        }
-        let alpha = finite(alpha, "α")?;
-        normalize(&mut self.bufs.v, alpha);
-
-        if let Some(reorth) = &mut self.bufs.local_reorth {
-            reorth.push(&self.bufs.v);
-        }
-
-        self.alpha = alpha;
-        Ok(BidiagStep { alpha, beta })
-    }
-
-    fn v(&self) -> &[f64] {
-        &self.bufs.v
-    }
-
-    fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> Result<f64, SolveError> {
-        residual_into(self.operator, x, rhs, &mut self.bufs.u)
-    }
-
-    fn plain_gradient(&mut self, residual_norm: f64) -> Result<Option<Magnitude>, SolveError> {
-        let bufs = &mut self.bufs;
-        let image = adjoint_image(
-            self.operator,
-            &bufs.u,
-            residual_norm,
-            &mut bufs.av,
-            &mut bufs.atu,
-        )?;
-        Ok(Some(image.norm()))
-    }
-
-    fn into_residual(self) -> Vec<f64> {
-        self.bufs.u
-    }
-
-    fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {
-        normalize(&mut self.bufs.u, beta);
-        self.operator
-            .apply_adjoint(&self.bufs.u, &mut self.bufs.v)?;
-        let alpha = finite(par_norm(&self.bufs.v), "α")?;
-        normalize(&mut self.bufs.v, alpha);
-        if let Some(reorth) = &mut self.bufs.local_reorth {
-            reorth.clear();
-            reorth.push(&self.bufs.v);
-        }
-        self.alpha = alpha;
-        Ok(BidiagStep { alpha, beta })
-    }
-}
-
 impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     for ModifiedGolubKahan<'_, A, M>
 {
     fn step(&mut self) -> Result<BidiagStep, SolveError> {
         let scale = -(self.alpha * self.u_norm_inv);
-        self.operator.apply(&self.bufs.v, &mut self.bufs.av)?;
+        let bufs = &mut self.bufs;
+        self.operator
+            .apply_with(&bufs.v, &mut bufs.av, MemStack::new(&mut bufs.stack))?;
         let beta = finite(axpy_with_norm(&mut self.bufs.u, &self.bufs.av, scale), "β")?;
         if beta == 0.0 {
             // Lucky breakdown: zero `v` and its paired `p̃` so the update contributes nothing.
@@ -510,7 +422,14 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
     }
 
     fn residual_norm(&mut self, x: &[f64], rhs: &[f64]) -> Result<f64, SolveError> {
-        residual_into(self.operator, x, rhs, &mut self.bufs.u)
+        let bufs = &mut self.bufs;
+        residual_into(
+            self.operator,
+            x,
+            rhs,
+            &mut bufs.u,
+            MemStack::new(&mut bufs.stack),
+        )
     }
 
     fn plain_gradient(&mut self, residual_norm: f64) -> Result<Option<Magnitude>, SolveError> {
@@ -521,6 +440,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
             residual_norm,
             &mut bufs.av,
             &mut bufs.atu,
+            MemStack::new(&mut bufs.stack),
         )?;
         Ok(Some(image.norm()))
     }
@@ -531,10 +451,17 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
 
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {
         normalize(&mut self.bufs.u, beta);
-        self.operator
-            .apply_adjoint(&self.bufs.u, &mut self.bufs.p_tilde)?;
-        self.preconditioner
-            .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
+        let bufs = &mut self.bufs;
+        self.operator.apply_adjoint_with(
+            &bufs.u,
+            &mut bufs.p_tilde,
+            MemStack::new(&mut bufs.stack),
+        )?;
+        self.preconditioner.apply_with(
+            &bufs.p_tilde,
+            &mut bufs.v,
+            MemStack::new(&mut bufs.stack),
+        )?;
         let alpha = alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde)?;
         normalize(&mut self.bufs.v, alpha);
         if let Some(reorth) = &mut self.bufs.local_reorth {
@@ -557,62 +484,9 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
             return Ok(None);
         }
         let bufs = &mut self.bufs;
-        let b_image = adjoint_image(self.operator, b, b_norm, &mut bufs.u, &mut bufs.atu)?;
+        let stack = MemStack::new(&mut bufs.stack);
+        let b_image = adjoint_image(self.operator, b, b_norm, &mut bufs.u, &mut bufs.atu, stack)?;
         Ok(Some((plain, b_image)))
-    }
-}
-
-/// Workspaces used by [`GolubKahan`].
-struct GolubKahanBuffers {
-    /// `u_k` in observation space (length m), kept normalized.
-    u: Vec<f64>,
-    /// `v_k` in DOF space (length n), kept normalized.
-    v: Vec<f64>,
-    /// Scratch for `A · v` (length m).
-    av: Vec<f64>,
-    /// Scratch for `Aᵀ · u` (length n).
-    atu: Vec<f64>,
-    /// Windowed reorthogonalization buffer; `None` disables it.
-    local_reorth: Option<WindowRing<1>>,
-}
-
-impl GolubKahanBuffers {
-    fn new(m: usize, n: usize, local_size: usize) -> Self {
-        Self {
-            u: vec![0.0; m],
-            v: vec![0.0; n],
-            av: vec![0.0; m],
-            atu: vec![0.0; n],
-            local_reorth: WindowRing::<1>::new(m, n, local_size),
-        }
-    }
-}
-
-/// Standard Golub-Kahan bidiagonalization: no preconditioner, two normalizations per step.
-pub(super) struct GolubKahan<'a, A: Operator + ?Sized> {
-    operator: &'a A,
-    bufs: GolubKahanBuffers,
-    /// Last `α` emitted; needed by the next step's u-update.
-    alpha: f64,
-}
-
-impl<'a, A: Operator + ?Sized> GolubKahan<'a, A> {
-    /// Initialize the bidiagonalization, returning `Self` and the first step `(α₁, β₁)`.
-    pub(super) fn init(
-        operator: &'a A,
-        b: &[f64],
-        b_norm: f64,
-        local_size: usize,
-    ) -> Result<(Self, BidiagStep), SolveError> {
-        let mut bufs = GolubKahanBuffers::new(operator.nrows(), operator.ncols(), local_size);
-        bufs.u.copy_from_slice(b);
-        let mut stream = Self {
-            operator,
-            bufs,
-            alpha: 0.0,
-        };
-        let step1 = stream.restart(b_norm)?;
-        Ok((stream, step1))
     }
 }
 
@@ -630,11 +504,14 @@ struct ModifiedGolubKahanBuffers {
     atu: Vec<f64>,
     /// Windowed M-weighted reorthogonalization buffer; `None` disables it.
     local_reorth: Option<WindowRing<2>>,
+    /// What one apply of the operator or the preconditioner takes; the run applies one at a time.
+    stack: MemBuffer,
 }
 
 impl ModifiedGolubKahanBuffers {
-    fn new(m: usize, n: usize, local_size: usize) -> Self {
+    fn new(m: usize, n: usize, local_size: usize, stack: StackReq) -> Self {
         Self {
+            stack: MemBuffer::new(stack),
             u: vec![0.0; m],
             v: vec![0.0; n],
             p_tilde: vec![0.0; n],
@@ -699,7 +576,8 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
         let stream = &mut self.0;
         let bufs = &mut stream.bufs;
         let (g, mv) = (&mut bufs.atu, &mut bufs.v);
-        let image = adjoint_image(stream.operator, rhs, rhs_norm, &mut bufs.av, g)?;
+        let stack = MemStack::new(&mut bufs.stack);
+        let image = adjoint_image(stream.operator, rhs, rhs_norm, &mut bufs.av, g, stack)?;
         if !image.g_norm.is_finite() {
             return Ok((Magnitude::from(image.g_norm), image.norm()));
         }
@@ -711,7 +589,9 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> StagedStart<'a, A, M> {
             1.0
         };
         normalize(g, scale);
-        stream.preconditioner.apply(g, mv)?;
+        stream
+            .preconditioner
+            .apply_with(g, mv, MemStack::new(&mut bufs.stack))?;
         let alpha = alpha_from_vp(mv, g)?;
         Ok((
             Magnitude::product(ldexp(1.0, image.k), scale) * Magnitude::from(alpha),
@@ -737,7 +617,12 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         Self {
             operator,
             preconditioner,
-            bufs: ModifiedGolubKahanBuffers::new(m, n, local_size),
+            bufs: ModifiedGolubKahanBuffers::new(
+                m,
+                n,
+                local_size,
+                operator.scratch().or(preconditioner.scratch()),
+            ),
             alpha: 0.0,
             u_norm_inv: 1.0,
         }
@@ -745,8 +630,9 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
 
     /// Scaling by `β / α_k` cancels the stored `α_k`; requires `α_k > 0`.
     fn update_p_tilde(&mut self, beta: f64) -> Result<(), SolveError> {
+        let bufs = &mut self.bufs;
         self.operator
-            .apply_adjoint(&self.bufs.u, &mut self.bufs.atu)?;
+            .apply_adjoint_with(&bufs.u, &mut bufs.atu, MemStack::new(&mut bufs.stack))?;
         debug_assert!(
             self.alpha > 0.0,
             "self.alpha must be > 0; lsmr_from_bidiag's loop guard prevents step() after alpha=0",
@@ -768,8 +654,12 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
 
     /// Recover `ṽ = M⁻¹ p̃`, MGS both in lockstep, normalize; returns `α_{k+1}`.
     fn reorthonormalize_v(&mut self) -> Result<f64, SolveError> {
-        self.preconditioner
-            .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
+        let bufs = &mut self.bufs;
+        self.preconditioner.apply_with(
+            &bufs.p_tilde,
+            &mut bufs.v,
+            MemStack::new(&mut bufs.stack),
+        )?;
 
         if let Some(reorth) = &self.bufs.local_reorth {
             reorth.reorthogonalize(&mut self.bufs.v, &mut self.bufs.p_tilde);
@@ -778,8 +668,12 @@ impl<'a, A: Operator + ?Sized, M: Operator + ?Sized> ModifiedGolubKahan<'a, A, M
         let alpha_new = match alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde) {
             // MGS updates `v` and `p̃` apart, so near breakdown `v` drifts from `M⁻¹ p̃`.
             Err(AlphaError::NegativeMetric) if self.bufs.local_reorth.is_some() => {
-                self.preconditioner
-                    .apply(&self.bufs.p_tilde, &mut self.bufs.v)?;
+                let bufs = &mut self.bufs;
+                self.preconditioner.apply_with(
+                    &bufs.p_tilde,
+                    &mut bufs.v,
+                    MemStack::new(&mut bufs.stack),
+                )?;
                 alpha_from_vp(&self.bufs.v, &self.bufs.p_tilde)?
             }
             alpha => alpha?,

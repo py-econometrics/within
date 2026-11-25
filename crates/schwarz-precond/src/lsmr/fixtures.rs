@@ -3,26 +3,27 @@
 use super::*;
 use crate::{Operator, SolveError};
 
-/// Identity operator used by mlsmr equivalence tests.
-pub(crate) struct IdentityOp {
-    pub(crate) n: usize,
-}
-
-impl Operator for IdentityOp {
-    fn nrows(&self) -> usize {
-        self.n
-    }
-    fn ncols(&self) -> usize {
-        self.n
-    }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        y.copy_from_slice(x);
-        Ok(())
-    }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        y.copy_from_slice(x);
-        Ok(())
-    }
+/// Unpreconditioned LSMR: [`mlsmr`] with [`IdentityOp`].
+pub(crate) fn lsmr<O: Operator + ?Sized>(
+    op: &O,
+    b: &[f64],
+    tol: f64,
+    maxiter: usize,
+    local_size: Option<usize>,
+) -> Result<LsmrResult, SolveError> {
+    let options = MlsmrOptions {
+        local_size,
+        ..Default::default()
+    };
+    mlsmr(
+        op,
+        b,
+        &IdentityOp { n: op.ncols() },
+        tol,
+        maxiter,
+        None,
+        options,
+    )
 }
 
 /// Simple 4×3 overdetermined system.
@@ -36,14 +37,19 @@ impl Operator for OverdeterminedOp {
     fn ncols(&self) -> usize {
         3
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
         y[0] = x[0];
         y[1] = x[1];
         y[2] = x[2];
         y[3] = x[0] + x[1];
         Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_adjoint_with(
+        &self,
+        u: &[f64],
+        x: &mut [f64],
+        _: &mut MemStack,
+    ) -> Result<(), SolveError> {
         x[0] = u[0] + u[3];
         x[1] = u[1] + u[3];
         x[2] = u[2];
@@ -63,12 +69,17 @@ impl Operator for ZeroSecondRow {
     fn ncols(&self) -> usize {
         2
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
         y[0] = x[0];
         y[1] = 0.0;
         Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_adjoint_with(
+        &self,
+        u: &[f64],
+        x: &mut [f64],
+        _: &mut MemStack,
+    ) -> Result<(), SolveError> {
         x[0] = u[0];
         x[1] = 0.0;
         Ok(())
@@ -97,14 +108,19 @@ impl Operator for DiagOp {
     fn ncols(&self) -> usize {
         self.0.len()
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
         for ((yi, &xi), &di) in y.iter_mut().zip(x).zip(self.0.iter()) {
             *yi = di * xi;
         }
         Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply_with(x, y, stack)
     }
 }
 
@@ -158,13 +174,18 @@ impl Operator for DenseOp {
     fn ncols(&self) -> usize {
         self.cols
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
         for (yi, row) in y.iter_mut().zip(self.data.chunks_exact(self.cols)) {
             *yi = row.iter().zip(x).map(|(a, b)| a * b).sum();
         }
         Ok(())
     }
-    fn apply_adjoint(&self, u: &[f64], x: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_adjoint_with(
+        &self,
+        u: &[f64],
+        x: &mut [f64],
+        _: &mut MemStack,
+    ) -> Result<(), SolveError> {
         for (j, xj) in x.iter_mut().enumerate() {
             let mut s = 0.0;
             for (ui, row) in u.iter().zip(self.data.chunks_exact(self.cols)) {
@@ -174,6 +195,13 @@ impl Operator for DenseOp {
         }
         Ok(())
     }
+}
+
+/// `b = A x`, a consistent right-hand side.
+pub(crate) fn consistent_rhs(op: &DenseOp, x: &[f64]) -> Vec<f64> {
+    let mut b = vec![0.0; op.rows];
+    op.apply(x, &mut b).expect("apply");
+    b
 }
 
 /// The ill-conditioned least-squares problem the ladder tests run on, with a smooth RHS.

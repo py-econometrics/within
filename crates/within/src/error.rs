@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::channel::ChannelPair;
+use crate::design::ChannelPair;
 
 pub use schwarz_precond::SolveError;
 
@@ -96,8 +96,8 @@ pub enum BuildError {
         /// Actual column count of the supplied preconditioner.
         actual_cols: usize,
     },
-    /// Every dominance comparison is `>`, so a NaN or infinite slack silently certifies anything.
-    #[error("scaling tolerance must be finite and non-negative, got {value}")]
+    /// A scaling tolerance outside `[0, 1)`.
+    #[error("scaling tolerance must lie in [0, 1), got {value}")]
     InvalidScalingTolerance {
         /// The offending value.
         value: f64,
@@ -118,9 +118,7 @@ pub enum BuildWarning {
     UnscalableComponent {
         /// The offending channel pair.
         pair: ChannelPair,
-        /// Scaling iterations spent before handing the result over.
-        iterations: usize,
-        /// Largest relative dominance violation at hand-over.
+        /// Largest relative dominance violation, clamped away.
         violation: f64,
     },
 }
@@ -128,15 +126,10 @@ pub enum BuildWarning {
 impl std::fmt::Display for BuildWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnscalableComponent {
-                pair,
-                iterations,
-                violation,
-            } => write!(
+            Self::UnscalableComponent { pair, violation } => write!(
                 f,
-                "signed component between {pair}: dominance scaling uncertified after \
-                 {iterations} iterations (max relative violation {violation:.2e}); deficits \
-                 clamped, preconditioner quality may degrade"
+                "signed component between {pair}: dominance scaling uncertified (max relative \
+                 violation {violation:.2e}); deficits clamped, preconditioner quality may degrade"
             ),
         }
     }
@@ -152,4 +145,20 @@ pub enum WithinError {
     /// Solve-time failure.
     #[error(transparent)]
     Solve(#[from] SolveError),
+    /// Response vector does not match the number of observations.
+    #[error("response has length {got}, expected {expected}")]
+    ResponseLengthMismatch {
+        /// Expected number of observations.
+        expected: usize,
+        /// Actual response length.
+        got: usize,
+    },
+    /// A non-finite response value.
+    #[error("response at index {index} must be finite, got {value}")]
+    InvalidResponse {
+        /// Index of the offending value.
+        index: usize,
+        /// The offending value.
+        value: f64,
+    },
 }

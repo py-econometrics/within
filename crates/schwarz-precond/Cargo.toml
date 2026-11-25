@@ -12,13 +12,17 @@ categories.workspace = true
 
 [features]
 serde = ["dep:serde"]
+# Pool helpers for tests in dependent crates.
+testing = []
 
 [dependencies]
+dyn-stack = { version = "0.13.2", default-features = false, features = ["alloc"] }
 rayon.workspace = true
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
+schwarz-precond = { path = ".", features = ["testing"] }
 faer.workspace = true
 postcard.workspace = true
 rstest.workspace = true

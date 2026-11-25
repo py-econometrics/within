@@ -4,8 +4,8 @@
 //! subdomains and diagonal local solvers.
 
 use schwarz_precond::{
-    lsmr, mlsmr, LocalSolveError, LocalSolver, MlsmrOptions, Operator, SchwarzPreconditioner,
-    SolveError, SubdomainCore, SubdomainEntry,
+    mlsmr, IdentityOp, LocalSolveError, LocalSolver, MemStack, MlsmrOptions, Operator,
+    SchwarzPreconditioner, SolveError, StackReq, SubdomainCore, SubdomainEntry, Threads,
 };
 
 // ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ impl Operator for TridiagOperator {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
         for i in 0..self.n {
             y[i] = 3.0 * x[i];
             if i > 0 {
@@ -35,8 +35,13 @@ impl Operator for TridiagOperator {
         }
         Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y) // symmetric
+    fn apply_adjoint_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply_with(x, y, stack) // symmetric
     }
 }
 // ---------------------------------------------------------------------------
@@ -52,14 +57,14 @@ impl LocalSolver for DiagLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn workspace_len(&self) -> usize {
-        0
+    fn scratch(&self, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
     }
     fn solve_local(
         &self,
         x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
+        _threads: Threads,
+        _stack: &mut MemStack,
     ) -> Result<(), LocalSolveError> {
         for v in x.iter_mut() {
             *v /= self.diag_val;
@@ -110,19 +115,32 @@ fn main() {
     let a = TridiagOperator { n };
 
     // --- Unpreconditioned LSMR ---
-    let result_plain = lsmr(&a, &rhs, 1e-10, 200, None).expect("unpreconditioned lsmr");
+    let result_plain = mlsmr(
+        &a,
+        &rhs,
+        &IdentityOp { n: a.ncols() },
+        1e-10,
+        200,
+        None,
+        MlsmrOptions::default(),
+    )
+    .expect("unpreconditioned lsmr");
     println!(
         "Unpreconditioned LSMR : converged={}, iterations={:>3}, residual={:.3e}",
-        result_plain.converged, result_plain.iterations, result_plain.residual_norm,
+        result_plain.converged(),
+        result_plain.iterations,
+        result_plain.residual_norm,
     );
 
     // --- Additive Schwarz preconditioned LSMR ---
     let precond = SchwarzPreconditioner::new(build_entries(n));
     let options = MlsmrOptions::default();
     let result_schwarz =
-        mlsmr(&a, &rhs, &precond, 1e-10, 200, options).expect("preconditioned lsmr");
+        mlsmr(&a, &rhs, &precond, 1e-10, 200, None, options).expect("preconditioned lsmr");
     println!(
         "Additive Schwarz LSMR : converged={}, iterations={:>3}, residual={:.3e}",
-        result_schwarz.converged, result_schwarz.iterations, result_schwarz.residual_norm,
+        result_schwarz.converged(),
+        result_schwarz.iterations,
+        result_schwarz.residual_norm,
     );
 }

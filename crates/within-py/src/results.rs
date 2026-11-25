@@ -11,6 +11,7 @@ use within::{
     BatchSolveResult, BuildWarning, Channel, CoefficientAddress, CoefficientLayout, SolveResult,
 };
 
+use crate::budget::ThreadBudget;
 use crate::convert::{value_err, IntoPyErr};
 
 #[pyclass(module = "within._within")]
@@ -216,23 +217,35 @@ pub(crate) fn into_py_batch_result(
     })
 }
 
-/// Run a native single-response solve with the GIL released.
-pub(crate) fn run_solve<E, F>(py: Python<'_>, solve: F) -> PyResult<PySolveResult>
+/// Run a native single-response solve with the GIL released, on the call's thread budget.
+pub(crate) fn run_solve<E, F>(
+    py: Python<'_>,
+    budget: ThreadBudget,
+    solve: F,
+) -> PyResult<PySolveResult>
 where
     E: IntoPyErr + Send,
     F: Send + FnOnce() -> Result<SolveResult, E>,
 {
-    let result = py.detach(solve).map_err(IntoPyErr::into_py_err)?;
+    let result = py
+        .detach(|| budget.run(solve))
+        .map_err(IntoPyErr::into_py_err)?;
     Ok(into_py_result(py, result))
 }
 
 /// Batch counterpart to [`run_solve`]; the conversion itself is fallible.
-pub(crate) fn run_batch<E, F>(py: Python<'_>, solve: F) -> PyResult<PyBatchSolveResult>
+pub(crate) fn run_batch<E, F>(
+    py: Python<'_>,
+    budget: ThreadBudget,
+    solve: F,
+) -> PyResult<PyBatchSolveResult>
 where
     E: IntoPyErr + Send,
     F: Send + FnOnce() -> Result<BatchSolveResult, E>,
 {
-    let result = py.detach(solve).map_err(IntoPyErr::into_py_err)?;
+    let result = py
+        .detach(|| budget.run(solve))
+        .map_err(IntoPyErr::into_py_err)?;
     into_py_batch_result(py, result)
 }
 
@@ -247,12 +260,18 @@ pub(crate) fn emit_build_warnings(py: Python<'_>, warnings: &[BuildWarning]) -> 
 }
 
 /// [`run_solve`] for the one-shot path, whose closure also returns warnings to re-emit.
-pub(crate) fn run_solve_with_warnings<E, F>(py: Python<'_>, solve: F) -> PyResult<PySolveResult>
+pub(crate) fn run_solve_with_warnings<E, F>(
+    py: Python<'_>,
+    budget: ThreadBudget,
+    solve: F,
+) -> PyResult<PySolveResult>
 where
     E: IntoPyErr + Send,
     F: Send + FnOnce() -> Result<(SolveResult, Vec<BuildWarning>), E>,
 {
-    let (result, warnings) = py.detach(solve).map_err(IntoPyErr::into_py_err)?;
+    let (result, warnings) = py
+        .detach(|| budget.run(solve))
+        .map_err(IntoPyErr::into_py_err)?;
     emit_build_warnings(py, &warnings)?;
     Ok(into_py_result(py, result))
 }
@@ -260,13 +279,16 @@ where
 /// Batch counterpart to [`run_solve_with_warnings`].
 pub(crate) fn run_batch_with_warnings<E, F>(
     py: Python<'_>,
+    budget: ThreadBudget,
     solve: F,
 ) -> PyResult<PyBatchSolveResult>
 where
     E: IntoPyErr + Send,
     F: Send + FnOnce() -> Result<(BatchSolveResult, Vec<BuildWarning>), E>,
 {
-    let (result, warnings) = py.detach(solve).map_err(IntoPyErr::into_py_err)?;
+    let (result, warnings) = py
+        .detach(|| budget.run(solve))
+        .map_err(IntoPyErr::into_py_err)?;
     emit_build_warnings(py, &warnings)?;
     into_py_batch_result(py, result)
 }

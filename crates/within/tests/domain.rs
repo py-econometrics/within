@@ -51,12 +51,12 @@ fn test_three_factor_design_solve_converges() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Disconnected bipartite graph → multiple subdomains per factor pair
+// 2. Disconnected bipartite graph → disjoint blocks in one factor pair's subdomain
 // ---------------------------------------------------------------------------
 
 /// Verify that a disconnected bipartite design converges under additive Schwarz.
-/// The disconnected structure means `build_local_domains` splits pair (0,1) into
-/// 2 subdomains — correctness is validated indirectly through convergence.
+/// Pair (0,1)'s factor has 2 disjoint blocks, solved within its one subdomain;
+/// correctness is validated indirectly through convergence.
 #[test]
 fn test_disconnected_design_larger_converges() {
     use within::{solve, LsmrOptions};

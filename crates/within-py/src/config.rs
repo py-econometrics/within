@@ -11,13 +11,15 @@ use std::num::NonZeroU32;
 
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
+use std::sync::Mutex;
 
 use within::config::{
     ApproxCholConfig, ApproxSchurConfig, LocalSolverConfig, LsmrOptions, PreconditionerConfig,
     ScalingConfig, ScalingFailure, SchurMode, Staleness,
 };
-use within::{Preconditioner, PreconditionerInput};
+use within::{MemBuffer, MemStack, Preconditioner, PreconditionerInput, Schwarz};
 
+use crate::budget::ThreadBudget;
 use crate::convert::{value_err, IntoPyErr};
 
 #[pyclass(frozen, module = "within._within")]
@@ -57,19 +59,17 @@ impl PyApproxCholConfig {
 #[pyclass(frozen, module = "within._within")]
 #[pyo3(name = "ApproxSchurConfig")]
 pub struct PyApproxSchurConfig {
-    #[pyo3(get)]
-    pub seed: u64,
     split: NonZeroU32,
 }
 
 #[pymethods]
 impl PyApproxSchurConfig {
     #[new]
-    #[pyo3(signature = (seed=0, split=1))]
-    fn new(seed: u64, split: u32) -> PyResult<Self> {
+    #[pyo3(signature = (split=1))]
+    fn new(split: u32) -> PyResult<Self> {
         let split = NonZeroU32::new(split)
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("split must be >= 1"))?;
-        Ok(Self { seed, split })
+        Ok(Self { split })
     }
 
     #[getter]
@@ -80,10 +80,7 @@ impl PyApproxSchurConfig {
 
 impl PyApproxSchurConfig {
     pub(crate) fn to_native(&self) -> ApproxSchurConfig {
-        ApproxSchurConfig {
-            seed: self.seed,
-            split: self.split,
-        }
+        ApproxSchurConfig { split: self.split }
     }
 }
 
@@ -120,7 +117,7 @@ impl PySchur {
     fn __repr__(&self) -> String {
         match &self.inner {
             SchurMode::Approximate(cfg) => {
-                format!("Schur.approximate(seed={}, split={})", cfg.seed, cfg.split)
+                format!("Schur.approximate(split={})", cfg.split)
             }
             SchurMode::Exact => "Schur.exact()".to_string(),
         }
@@ -233,15 +230,17 @@ impl PyPreconditionerConfig {
         match self {
             Self::Off() => PreconditionerConfig::Off,
             Self::Diagonal() => PreconditionerConfig::Diagonal,
-            Self::Additive { local_solver } => PreconditionerConfig::Additive {
+            Self::Additive { local_solver } => PreconditionerConfig::Schwarz(Schwarz {
                 local_solver: local_solver.to_native(),
-            },
+            }),
             Self::Adaptive {
                 local_solver,
                 stall,
             } => PreconditionerConfig::Adaptive {
-                local_solver: local_solver.to_native(),
                 stall: stall.to_native(),
+                schwarz: Schwarz {
+                    local_solver: local_solver.to_native(),
+                },
             },
         }
     }
@@ -250,14 +249,11 @@ impl PyPreconditionerConfig {
         Ok(match config {
             PreconditionerConfig::Off => Self::Off(),
             PreconditionerConfig::Diagonal => Self::Diagonal(),
-            PreconditionerConfig::Additive { local_solver } => Self::Additive {
-                local_solver: PyLocalSolverConfig::from_native(local_solver),
+            PreconditionerConfig::Schwarz(schwarz) => Self::Additive {
+                local_solver: PyLocalSolverConfig::from_native(&schwarz.local_solver),
             },
-            PreconditionerConfig::Adaptive {
-                local_solver,
-                stall,
-            } => Self::Adaptive {
-                local_solver: PyLocalSolverConfig::from_native(local_solver),
+            PreconditionerConfig::Adaptive { stall, schwarz } => Self::Adaptive {
+                local_solver: PyLocalSolverConfig::from_native(&schwarz.local_solver),
                 stall: PyStaleness { inner: *stall },
             },
             _ => {
@@ -414,16 +410,30 @@ impl PyLsmrOptions {
 #[pyo3(name = "Preconditioner")]
 pub struct PyPreconditioner {
     pub(crate) inner: Preconditioner,
+    /// The last apply's stack, for the next; an apply that finds it taken allocates its own.
+    stack: Mutex<Option<MemBuffer>>,
+}
+
+impl From<Preconditioner> for PyPreconditioner {
+    fn from(inner: Preconditioner) -> Self {
+        Self {
+            inner,
+            stack: Mutex::default(),
+        }
+    }
 }
 
 #[pymethods]
 impl PyPreconditioner {
     /// Apply the preconditioner: ``y = M⁻¹ x``.
+    #[pyo3(signature = (x, threads=None))]
     fn apply<'py>(
         &self,
         py: Python<'py>,
         x: PyReadonlyArray1<'py, f64>,
+        threads: Option<isize>,
     ) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+        let budget = ThreadBudget::new(threads)?;
         let x_slice = x
             .as_slice()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("x must be contiguous"))?;
@@ -436,8 +446,21 @@ impl PyPreconditioner {
         }
         let y = py
             .detach(|| {
-                let mut y = vec![0.0; self.inner.nrows()];
-                self.inner.apply(x_slice, &mut y).map(|()| y)
+                budget.run(|| {
+                    let mut y = vec![0.0; self.inner.nrows()];
+                    let Ok(mut kept) = self.stack.try_lock() else {
+                        return self.inner.apply(x_slice, &mut y).map(|()| y);
+                    };
+                    // Schwarz sizes its scratch for the pool it runs on.
+                    let req = self.inner.scratch();
+                    let buffer = kept.get_or_insert_with(|| MemBuffer::new(req));
+                    if !MemStack::new(buffer).can_hold(req) {
+                        *buffer = MemBuffer::new(req);
+                    }
+                    self.inner
+                        .apply_with(x_slice, &mut y, MemStack::new(buffer))
+                        .map(|()| y)
+                })
             })
             .map_err(IntoPyErr::into_py_err)?;
         Ok(numpy::PyArray1::from_vec(py, y))
@@ -489,10 +512,10 @@ impl PyPreconditioner {
                 e
             ))
         })?;
-        Ok(Self { inner })
+        Ok(Self::from(inner))
     }
 
-    /// Complete normalized configuration used to build this preconditioner.
+    /// The configuration whose ladder this map belongs to.
     #[getter]
     fn config(&self) -> PyResult<PyPreconditionerConfig> {
         PyPreconditionerConfig::from_native(&self.inner.config())

@@ -8,7 +8,6 @@ use crate::Operator;
 
 #[derive(Clone, Copy, Debug)]
 enum Metric {
-    None,
     Identity,
     Diagonal,
 }
@@ -27,21 +26,19 @@ fn solve<A: Operator>(
             .collect(),
     );
     let options = MlsmrOptions {
-        warm_start,
         local_size,
         ..Default::default()
     };
     match metric {
-        Metric::None => lsmr(a, b, 1e-10, 50, local_size),
-        Metric::Identity => mlsmr(a, b, &IdentityOp { n }, 1e-10, 50, options),
-        Metric::Diagonal => mlsmr(a, b, &diagonal, 1e-10, 50, options),
+        Metric::Identity => mlsmr(a, b, &IdentityOp { n }, 1e-10, 50, warm_start, options),
+        Metric::Diagonal => mlsmr(a, b, &diagonal, 1e-10, 50, warm_start, options),
     }
 }
 
 /// `α₁ = ‖Aᵀb‖ / ‖b‖ ≈ 1e-310` is subnormal although `‖A‖` and `‖b‖` are not, so `1/α₁` is ∞.
 #[rstest]
 fn a_subnormal_initial_gradient_normalizes_its_basis_vector(
-    #[values(Metric::None, Metric::Identity, Metric::Diagonal)] metric: Metric,
+    #[values(Metric::Identity, Metric::Diagonal)] metric: Metric,
     #[values(None, Some(2))] local_size: Option<usize>,
 ) {
     let r = solve(
@@ -53,7 +50,7 @@ fn a_subnormal_initial_gradient_normalizes_its_basis_vector(
     )
     .expect("subnormal-gradient solve");
 
-    assert!(r.converged, "{:?}", r.stop_reason);
+    assert!(r.converged(), "{:?}", r.stop_reason);
     assert_eq!(r.x[0], 0.0);
     assert!((r.x[1] / 1e-110 - 1.0).abs() < 1e-9, "{:?}", r.x);
 }
@@ -61,12 +58,12 @@ fn a_subnormal_initial_gradient_normalizes_its_basis_vector(
 /// A subnormal `‖b‖` has no representable reciprocal either.
 #[rstest]
 fn a_subnormal_rhs_normalizes_its_first_vector(
-    #[values(Metric::None, Metric::Identity, Metric::Diagonal)] metric: Metric,
+    #[values(Metric::Identity, Metric::Diagonal)] metric: Metric,
 ) {
     let r = solve(&IdentityOp { n: 2 }, &[1e-310, 0.0], metric, None, None)
         .expect("subnormal-rhs solve");
 
-    assert!(r.converged, "{:?}", r.stop_reason);
+    assert!(r.converged(), "{:?}", r.stop_reason);
     assert!((r.x[0] / 1e-310 - 1.0).abs() < 1e-9, "{:?}", r.x);
     assert_eq!(r.x[1], 0.0);
 }
@@ -88,7 +85,7 @@ fn a_warm_start_far_below_the_rhs_scale_certifies(
     let b = [big, small, rho * small];
     let r = solve(&a, &b, metric, None, Some(&[big, 0.0])).expect("warm solve");
 
-    assert!(r.converged, "{:?}", r.stop_reason);
+    assert!(r.converged(), "{:?}", r.stop_reason);
     assert!((r.x[0] / big - 1.0).abs() < 1e-12, "{:?}", r.x);
     assert!((r.x[1] / small - 1.0).abs() < 1e-9, "{:?}", r.x);
     assert!((r.residual_norm - rho * small).abs() <= 1e-9 * small);
@@ -108,11 +105,12 @@ fn a_definite_metric_whose_raw_dot_product_overflows_is_rescaled() {
         &m,
         1e-10,
         50,
+        None,
         MlsmrOptions::default(),
     )
     .expect("overflowing-dot solve");
 
-    assert!(r.converged, "{:?}", r.stop_reason);
+    assert!(r.converged(), "{:?}", r.stop_reason);
     assert!((r.x[0] / 5e-201 - 1.0).abs() < 1e-8, "{:?}", r.x);
     assert!((r.x[1] / 1e-200 - 1.0).abs() < 1e-8, "{:?}", r.x);
 }
@@ -124,7 +122,7 @@ fn an_operator_at_the_top_of_the_range_solves_to_its_backward_error() {
     let b = [1.0, 1.0];
     let r = lsmr(&a, &b, 1e-10, 50, None).expect("top-of-range solve");
 
-    assert!(r.converged, "{:?}", r.stop_reason);
+    assert!(r.converged(), "{:?}", r.stop_reason);
     assert!((r.x[0] * f64::MAX - 1.0).abs() < 1e-9, "{:?}", r.x);
     let normr = vec_norm(&[b[0] - f64::MAX * r.x[0], b[1] - r.x[1]]);
     let backward_error = normal_equation_residual(&a, &r.x, &b) / f64::MAX / normr;
@@ -147,6 +145,7 @@ fn an_operator_past_the_unnormalized_headroom_fails_loudly(#[case] data: &[f64])
         &IdentityOp { n: 2 },
         0.0,
         2,
+        None,
         MlsmrOptions::default(),
     );
     assert!(r.is_err(), "{:?}", r.map(|r| r.x));
@@ -173,6 +172,7 @@ fn a_run_past_krylov_exhaustion_never_returns_a_non_finite_x(
             &IdentityOp { n: 2 },
             0.0,
             5,
+            None,
             MlsmrOptions::default(),
         )
     } else {
@@ -202,14 +202,12 @@ fn a_subnormal_rhs_bounds_the_operator_by_its_own_norm() {
         &DiagOp(vec![1.0, 0.0]),
         1e-10,
         50,
-        MlsmrOptions {
-            warm_start: Some(&[1e-310, 1e-320]),
-            ..Default::default()
-        },
+        Some(&[1e-310, 1e-320]),
+        MlsmrOptions::default(),
     )
     .expect("subnormal-rhs warm solve");
 
-    assert!(r.converged, "{:?}", r.stop_reason);
+    assert!(r.converged(), "{:?}", r.stop_reason);
     assert_eq!(
         r.stop_reason,
         LsmrStopReason::InitialNormalEquationResidualZero
@@ -226,10 +224,8 @@ fn a_warm_reference_past_the_double_range_reports_against_b() {
             &IdentityOp { n: 2 },
             1e-10,
             1,
-            MlsmrOptions {
-                warm_start: Some(&[0.5 * t / s, 0.0]),
-                ..Default::default()
-            },
+            Some(&[0.5 * t / s, 0.0]),
+            MlsmrOptions::default(),
         )
         .expect("warm solve")
     };
@@ -251,10 +247,8 @@ fn a_warm_reference_keeps_an_rhs_entry_far_below_its_norm() {
         &DiagOp(vec![2f64.powi(-1000), 2f64.powi(700)]),
         1e-10,
         0,
-        MlsmrOptions {
-            warm_start: Some(&[2f64.powi(600), 0.0]),
-            ..Default::default()
-        },
+        Some(&[2f64.powi(600), 0.0]),
+        MlsmrOptions::default(),
     )
     .expect("warm solve");
     assert!(
@@ -277,10 +271,8 @@ fn a_subnormal_warm_gradient_stays_raw_under_a_huge_metric() {
         },
         1e-10,
         0,
-        MlsmrOptions {
-            warm_start: Some(&[1.0, 1.0]),
-            ..Default::default()
-        },
+        Some(&[1.0, 1.0]),
+        MlsmrOptions::default(),
     )
     .expect("warm solve");
     assert!(
@@ -300,12 +292,10 @@ fn a_rounded_subnormal_rhs_norm_does_not_overstate_the_operator() {
         &DiagOp(vec![eps, eps]),
         0.0046,
         50,
-        MlsmrOptions {
-            warm_start: Some(&[0.0, 2.0]),
-            ..Default::default()
-        },
+        Some(&[0.0, 2.0]),
+        MlsmrOptions::default(),
     )
     .expect("warm solve");
-    assert!(!r.converged, "{:?}", r.stop_reason);
+    assert!(!r.converged(), "{:?}", r.stop_reason);
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
 }

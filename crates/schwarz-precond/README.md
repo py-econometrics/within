@@ -23,8 +23,8 @@ cargo add schwarz-precond
 
 ```rust
 use schwarz_precond::{
-    mlsmr, LocalSolver, MlsmrOptions, Operator, SchwarzPreconditioner,
-    SolveError, SubdomainCore, SubdomainEntry,
+    mlsmr, LocalSolver, MemStack, MlsmrOptions, Operator, SchwarzPreconditioner,
+    SolveError, StackReq, SubdomainCore, SubdomainEntry, Threads,
 };
 
 // --- Tridiagonal SPD operator: A = tridiag(-1, 3, -1) ---
@@ -33,7 +33,7 @@ struct TridiagOp(usize);
 impl Operator for TridiagOp {
     fn nrows(&self) -> usize { self.0 }
     fn ncols(&self) -> usize { self.0 }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
         for i in 0..self.0 {
             y[i] = 3.0 * x[i];
             if i > 0          { y[i] -= x[i - 1]; }
@@ -41,8 +41,8 @@ impl Operator for TridiagOp {
         }
         Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint_with(&self, x: &[f64], y: &mut [f64], stack: &mut MemStack) -> Result<(), SolveError> {
+        self.apply_with(x, y, stack)
     }
 }
 
@@ -51,12 +51,12 @@ struct DiagSolver(usize, f64);
 
 impl LocalSolver for DiagSolver {
     fn n_local(&self) -> usize { self.0 }
-    fn workspace_len(&self) -> usize { 0 }
+    fn scratch(&self, _threads: Threads) -> StackReq { StackReq::EMPTY }
     fn solve_local(
         &self,
         x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
+        _threads: Threads,
+        _stack: &mut MemStack,
     ) -> Result<(), schwarz_precond::LocalSolveError> {
         for v in x.iter_mut() { *v /= self.1; }
         Ok(())
@@ -80,11 +80,11 @@ fn main() {
         .collect();
 
     let precond = SchwarzPreconditioner::new(entries);
-    let result = mlsmr(&a, &b, &precond, 1e-10, 500, MlsmrOptions::default())
+    let result = mlsmr(&a, &b, &precond, 1e-10, 500, None, MlsmrOptions::default())
         .expect("lsmr should converge");
 
     println!("converged={} iters={} res={:.3e}",
-        result.converged, result.iterations, result.residual_norm);
+        result.converged(), result.iterations, result.residual_norm);
 }
 ```
 

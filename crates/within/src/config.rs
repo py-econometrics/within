@@ -15,7 +15,7 @@ use crate::error::BuildError;
 
 pub use schwarz_precond::{Staleness, StalenessError};
 
-/// Default `n_keep` threshold below which a Schur domain tries the exact dense backend.
+/// Default block dimension at or below which a block is factored exactly.
 pub(crate) const DEFAULT_DENSE_SCHUR_THRESHOLD: usize = 24;
 
 /// Configuration for approximate Cholesky factorization.
@@ -25,24 +25,6 @@ pub struct ApproxCholConfig {
     pub seed: u64,
     /// Optional split/merge count for denser AC2-style factorizations.
     pub split_merge: Option<u32>,
-}
-
-impl ApproxCholConfig {
-    pub(crate) fn to_approx_chol(
-        self,
-        exact_below: usize,
-        on_failure: approx_chol::ExactFailure,
-    ) -> approx_chol::Config {
-        approx_chol::Config {
-            seed: self.seed,
-            split_merge: self.split_merge,
-            // `max_dim: 0` claims no block, which is what `dense_threshold: 0` asks for.
-            backend: approx_chol::Backend::ExactBelow {
-                max_dim: exact_below,
-                on_failure,
-            },
-        }
-    }
 }
 
 /// Schur reduction mode: sampled bounds per-subdomain cost, exact trades speed for fidelity.
@@ -67,7 +49,7 @@ pub struct LocalSolverConfig {
     pub approx_chol: ApproxCholConfig,
     /// Schur-complement reduction mode (default: approximate).
     pub schur: SchurMode,
-    /// Reduced-size threshold at or below which fill-in is affordable; `0` disables.
+    /// Largest Cholesky dimension factored exactly, a signed block's two cover sheets counted; `0` disables.
     pub dense_threshold: usize,
     /// Certification policy for the diagonal scaling of signed components.
     pub scaling: ScalingConfig,
@@ -76,11 +58,38 @@ pub struct LocalSolverConfig {
 impl LocalSolverConfig {
     /// Separate from any build so a deferred escalation can reject the config at construction.
     pub(crate) fn validate(&self) -> Result<(), BuildError> {
-        let tolerance = self.scaling.tolerance;
-        if !tolerance.is_finite() || tolerance < 0.0 {
-            return Err(BuildError::InvalidScalingTolerance { value: tolerance });
+        self.scaling_policy().map(|_| ())
+    }
+
+    pub(crate) fn scaling_policy(&self) -> Result<approx_chol::ScalingPolicy, BuildError> {
+        let ScalingConfig {
+            tolerance,
+            max_iterations,
+            ..
+        } = self.scaling;
+        approx_chol::ScalingPolicy::new(tolerance, max_iterations)
+            .ok_or(BuildError::InvalidScalingTolerance { value: tolerance })
+    }
+
+    pub(crate) fn factor_config(&self) -> approx_chol::Config {
+        // `split_merge: None` and a split of `1` are standard AC; a count above one is AC2.
+        let sampling = |copies: Option<NonZeroU32>| approx_chol::Sampling::CliqueTree {
+            copies: copies.unwrap_or(NonZeroU32::MIN),
+        };
+        approx_chol::Config {
+            seed: self.approx_chol.seed,
+            sampling: sampling(self.approx_chol.split_merge.and_then(NonZeroU32::new)),
+            exact_max_dim: self.dense_threshold,
+            complement: match self.schur {
+                SchurMode::Approximate(ApproxSchurConfig { split }) => {
+                    approx_chol::SchurMode::Approximate {
+                        sampling: sampling(Some(split)),
+                    }
+                }
+                SchurMode::Exact => approx_chol::SchurMode::Exact,
+            },
+            ..Default::default()
         }
-        Ok(())
     }
 }
 
@@ -101,9 +110,9 @@ impl Default for LocalSolverConfig {
 /// Frustration is always a hard error; this governs only the dominance certificate.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ScalingConfig {
-    /// Relative slack for weak dominance; PSD-boundary designs hover at ≈ 1e-12.
+    /// Relative slack for weak dominance, in `[0, 1)`; PSD-boundary designs hover at ≈ 1e-12.
     pub tolerance: f64,
-    /// Reduced-CG iteration budget; each iteration costs 2–4 matrix-vector passes.
+    /// Scaling iteration budget per component.
     pub max_iterations: usize,
     /// Disposition when certification fails.
     pub on_failure: ScalingFailure,
@@ -128,7 +137,7 @@ impl Default for ScalingConfig {
     }
 }
 
-/// Approximate Schur via GKS 2023 Algorithm 3: unbiased edge weights at O(deg) fill.
+/// Approximate Schur via GKS 2023 Algorithm 3, drawing from [`ApproxCholConfig::seed`].
 ///
 /// The split factor is nonzero in Rust as well as Python:
 ///
@@ -137,7 +146,6 @@ impl Default for ScalingConfig {
 /// use within::ApproxSchurConfig;
 ///
 /// let config = ApproxSchurConfig {
-///     seed: 0,
 ///     split: NonZeroU32::new(2).unwrap(),
 /// };
 /// let _ = config;
@@ -148,15 +156,12 @@ impl Default for ScalingConfig {
 /// use within::ApproxSchurConfig;
 ///
 /// let config = ApproxSchurConfig {
-///     seed: 0,
 ///     split: 0,
 /// };
 /// let _ = config;
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApproxSchurConfig {
-    /// Random seed for the clique-tree sampler.
-    pub seed: u64,
     /// Star-edge split factor: `1` is standard, `k > 1` a denser approximation at more fill-in.
     pub split: NonZeroU32,
 }
@@ -164,39 +169,81 @@ pub struct ApproxSchurConfig {
 impl Default for ApproxSchurConfig {
     fn default() -> Self {
         Self {
-            seed: 0,
             split: NonZeroU32::MIN,
         }
     }
 }
 
 /// Preconditioner variant. `#[non_exhaustive]`, so external `match` sites need a wildcard arm.
+// Append only: postcard encodes by declaration order and every `Preconditioner` carries one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum PreconditionerConfig {
     /// Identity preconditioner. Solves the unpreconditioned normal equations.
     Off,
-    /// One-level additive Schwarz over factor-pair subdomains.
-    Additive {
-        /// Local solver configuration applied inside each subdomain.
-        local_solver: LocalSolverConfig,
-    },
+    /// Schwarz from construction on.
+    Schwarz(Schwarz),
     /// Diagonal/Jacobi; a zero diagonal takes the pseudo-inverse, pinning that coordinate to 0.
     Diagonal,
-    /// Diagonal first; additive Schwarz is built at, and used from, the first stalled contraction.
+    /// Diagonal first; Schwarz is built at, and used from, the first `stall`.
     Adaptive {
-        /// Local solver configuration for the escalated Schwarz factorization.
-        local_solver: LocalSolverConfig,
-        /// Contraction-stall condition that triggers escalation.
+        /// The contraction stall on the diagonal that hands the solve to Schwarz.
         stall: Staleness,
+        /// The Schwarz the solve moves to.
+        schwarz: Schwarz,
     },
+}
+
+/// One-level additive Schwarz over channel-pair subdomains.
+// Append only: postcard encodes fields in declaration order and every `Preconditioner` carries one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Schwarz {
+    /// Local solver configuration applied inside each subdomain.
+    pub local_solver: LocalSolverConfig,
 }
 
 impl Default for PreconditionerConfig {
     fn default() -> Self {
         Self::Adaptive {
-            local_solver: LocalSolverConfig::default(),
             stall: Staleness::default(),
+            schwarz: Schwarz::default(),
+        }
+    }
+}
+
+impl PreconditionerConfig {
+    /// The rungs a solve climbs, in order, each with the stall that hands a solve to the next.
+    pub(crate) fn rungs(&self) -> impl Iterator<Item = (Rung<'_>, Option<&Staleness>)> {
+        let (first, second) = match self {
+            Self::Off => (None, None),
+            Self::Diagonal => (Some((Rung::Diagonal, None)), None),
+            Self::Schwarz(schwarz) => (Some((Rung::Schwarz(schwarz), None)), None),
+            Self::Adaptive { stall, schwarz } => (
+                Some((Rung::Diagonal, Some(stall))),
+                Some((Rung::Schwarz(schwarz), None)),
+            ),
+        };
+        first.into_iter().chain(second)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), BuildError> {
+        self.rungs().try_for_each(|(rung, _)| rung.validate())
+    }
+}
+
+/// The map one rung of a ladder builds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Rung<'c> {
+    Diagonal,
+    Schwarz(&'c Schwarz),
+}
+
+impl Rung<'_> {
+    /// Separate from any build so a deferred rung can reject its config at construction.
+    fn validate(&self) -> Result<(), BuildError> {
+        match self {
+            Self::Diagonal => Ok(()),
+            Self::Schwarz(schwarz) => schwarz.local_solver.validate(),
         }
     }
 }
@@ -230,25 +277,19 @@ mod tests {
 
     #[derive(serde::Serialize)]
     struct LegacyApproxSchurConfig {
-        seed: u64,
         split: u32,
     }
 
     #[test]
     fn approximate_schur_default_is_standard_sampling() {
         let config = ApproxSchurConfig::default();
-        assert_eq!(config.seed, 0);
         assert_eq!(config.split.get(), 1);
     }
 
     #[rstest]
-    fn approximate_schur_positive_wire_bytes_are_unchanged(
-        #[values(0, 17, u64::MAX)] seed: u64,
-        #[values(1, 2, u32::MAX)] split: u32,
-    ) {
-        let legacy = LegacyApproxSchurConfig { seed, split };
+    fn approximate_schur_positive_wire_bytes_are_unchanged(#[values(1, 2, u32::MAX)] split: u32) {
+        let legacy = LegacyApproxSchurConfig { split };
         let config = ApproxSchurConfig {
-            seed,
             split: NonZeroU32::new(split).unwrap(),
         };
         let bytes = postcard::to_stdvec(&legacy).expect("serialize legacy fields");
@@ -261,6 +302,8 @@ mod tests {
 
     #[test]
     fn approximate_schur_rejects_zero_on_deserialization() {
-        assert!(postcard::from_bytes::<ApproxSchurConfig>(&[0, 0]).is_err());
+        let bytes = postcard::to_stdvec(&LegacyApproxSchurConfig { split: 0 })
+            .expect("serialize legacy zero split");
+        assert!(postcard::from_bytes::<ApproxSchurConfig>(&bytes).is_err());
     }
 }

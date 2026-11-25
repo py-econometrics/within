@@ -14,7 +14,7 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use within::config::{LocalSolverConfig, LsmrOptions, PreconditionerConfig};
+use within::config::{LsmrOptions, PreconditionerConfig};
 use within::Solver;
 
 #[path = "../benches/shared/fixest_dgp.rs"]
@@ -44,9 +44,7 @@ fn main() {
         maxiter: 200,
         ..Default::default()
     };
-    let precond = PreconditionerConfig::Additive {
-        local_solver: LocalSolverConfig::default(),
-    };
+    let precond = PreconditionerConfig::Schwarz(within::Schwarz::default());
 
     let t_build = Instant::now();
     let solver = Solver::new(design, None, &precond).expect("solver build");

@@ -102,7 +102,7 @@ solver2 = Solver(fe, preconditioner=precond)   # skip re-factorization
 Pass `None` (the default) for the adaptive ladder: diagonal, escalating to additive Schwarz on a stalled contraction.
 `PreconditionerConfig` is a tagged union: each variant is a subclass, so instances
 support `match`/`case` and compare by value. A built preconditioner exposes
-the configuration used to construct it as `.config` and its original build duration in
+the configuration whose ladder it belongs to as `.config` and its original build duration in
 seconds as `.build_duration_seconds`; both are preserved across pickling and reuse.
 
 ### Local solver configuration (advanced)
@@ -112,7 +112,7 @@ seconds as `.build_duration_seconds`; both are preserved across pickling and reu
 | `LocalSolverConfig(approx_chol?, schur?, dense_threshold?, scaling?)` | Schur complement reduction with approximate Cholesky on the reduced system. Default local solver. Import from `within.config`. Omit `schur` for the library default (approximate); pass `Schur.exact()` for the exact complement. |
 | `Schur.approximate(config?)` / `Schur.exact()` | Schur-reduction mode for `LocalSolverConfig`. |
 | `ApproxCholConfig(seed=0, split_merge=None)` | Approximate Cholesky parameters. |
-| `ApproxSchurConfig(seed=0, split=1)` | Approximate Schur complement sampling parameters. |
+| `ApproxSchurConfig(split=1)` | Approximate Schur complement sampling parameters; draws from `ApproxCholConfig.seed`. |
 
 ### Result types
 

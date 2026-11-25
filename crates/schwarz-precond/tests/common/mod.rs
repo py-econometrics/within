@@ -1,7 +1,8 @@
 //! Shared test fixtures for schwarz-precond integration tests.
 
 use schwarz_precond::{
-    LocalSolveError, LocalSolver, Operator, SolveError, SubdomainCore, SubdomainEntry,
+    LocalSolveError, LocalSolver, MemStack, Operator, SolveError, StackReq, SubdomainCore,
+    SubdomainEntry, Threads,
 };
 
 // ---------------------------------------------------------------------------
@@ -27,7 +28,7 @@ impl Operator for TridiagOperator {
     fn ncols(&self) -> usize {
         self.n
     }
-    fn apply(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
+    fn apply_with(&self, x: &[f64], y: &mut [f64], _: &mut MemStack) -> Result<(), SolveError> {
         for i in 0..self.n {
             y[i] = self.diag_val * x[i];
             if i > 0 {
@@ -39,8 +40,13 @@ impl Operator for TridiagOperator {
         }
         Ok(())
     }
-    fn apply_adjoint(&self, x: &[f64], y: &mut [f64]) -> Result<(), SolveError> {
-        self.apply(x, y)
+    fn apply_adjoint_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply_with(x, y, stack)
     }
 }
 
@@ -67,14 +73,14 @@ impl LocalSolver for UniformDiagLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn workspace_len(&self) -> usize {
-        0
+    fn scratch(&self, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
     }
     fn solve_local(
         &self,
         x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
+        _threads: Threads,
+        _stack: &mut MemStack,
     ) -> Result<(), LocalSolveError> {
         assert_eq!(x.len(), self.n_local);
         for v in x.iter_mut() {
@@ -123,14 +129,14 @@ impl LocalSolver for FailingLocalSolver {
     fn n_local(&self) -> usize {
         self.n_local
     }
-    fn workspace_len(&self) -> usize {
-        0
+    fn scratch(&self, _threads: Threads) -> StackReq {
+        StackReq::EMPTY
     }
     fn solve_local(
         &self,
         _x: &mut [f64],
-        _workspace: &mut [f64],
-        _allow_inner_parallelism: bool,
+        _threads: Threads,
+        _stack: &mut MemStack,
     ) -> Result<(), LocalSolveError> {
         Err(LocalSolveError::BackendFailed {
             context: "test.failing_local_solver",
