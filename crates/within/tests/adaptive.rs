@@ -31,35 +31,33 @@ fn tight() -> LsmrOptions {
 /// Crossed workers/firms with periodic mobility: the diagonal needs enough iterations for a
 /// re-probe or a lost handoff to be visible, and Schwarz converges in strictly fewer.
 fn crossed_panel() -> Design<'static> {
+    common::make_design(crossed_categories()).expect("design")
+}
+
+fn crossed_categories() -> Vec<Vec<u32>> {
     let n = 20_000;
     let workers: Vec<u32> = (0..n).map(|i| (i / 8) as u32).collect();
     let firms: Vec<u32> = (0..n)
         .map(|i| ((i / 8 + i % 8 * 977) % 500) as u32)
         .collect();
-    common::make_design(vec![workers, firms]).expect("design")
+    vec![workers, firms]
 }
 
 #[rstest]
-fn the_escalated_answer_matches_a_cold_additive_solve(
-    #[values(None, Some(vec![1.0, 2.0, 1.5, 0.5, 3.0]))] weights: Option<Vec<f64>>,
-) {
-    let cats = common::test_categories();
-    let y = common::make_deterministic_y(&common::make_test_design());
+fn the_escalated_answer_matches_a_cold_additive_solve(#[values(false, true)] weighted: bool) {
+    let cats = crossed_categories();
+    let weights: Option<Vec<f64>> = weighted.then(|| {
+        (0..cats[0].len())
+            .map(|i| 0.5 + (i % 7) as f64 * 0.25)
+            .collect()
+    });
+    let y = common::make_deterministic_y(&crossed_panel());
 
-    let ladder = Solver::new(
-        common::make_design(cats.clone()).expect("design"),
-        weights.as_deref(),
-        adaptive(eager_stall()),
-    )
-    .expect("solver");
-    let escalated = ladder.solve(&y, None).expect("adaptive solve");
-    let cold = Solver::new(
-        common::make_design(cats.clone()).expect("design"),
-        weights.as_deref(),
-        additive(),
-    )
-    .expect("solver");
-    let reference = cold.solve(&y, None).expect("additive solve");
+    let ladder =
+        Solver::new(crossed_panel(), weights.as_deref(), adaptive(eager_stall())).expect("solver");
+    let escalated = ladder.solve(&y, &tight()).expect("adaptive solve");
+    let cold = Solver::new(crossed_panel(), weights.as_deref(), additive()).expect("solver");
+    let reference = cold.solve(&y, &tight()).expect("additive solve");
 
     // Visible in the solver's lifecycle...
     assert!(ladder.has_escalated(), "eager stall must hand off");
@@ -104,21 +102,17 @@ fn without_a_target_it_behaves_like_diagonal() {
 /// the last permitted iteration leaves it nothing, so the map is not built at all.
 #[rstest]
 // Schwarz needs a few dozen iterations on the crossed panel, so what rung 1 leaves of 6 binds.
-#[case::rung_two_gets_the_remainder(crossed_panel(), 6, true)]
-// This design's eager stall fires on iteration 2, so that is exactly the budget to grant.
-#[case::a_final_iteration_stall_builds_nothing(common::make_test_design(), 2, false)]
-fn the_ladder_spends_exactly_the_callers_budget(
-    #[case] design: Design<'static>,
-    #[case] maxiter: usize,
-    #[case] escalates: bool,
-) {
-    let y = common::make_deterministic_y(&design);
+#[case::rung_two_gets_the_remainder(6, true)]
+// The crossed panel's eager stall fires on iteration 2, so that is exactly the budget to grant.
+#[case::a_final_iteration_stall_builds_nothing(2, false)]
+fn the_ladder_spends_exactly_the_callers_budget(#[case] maxiter: usize, #[case] escalates: bool) {
+    let y = common::make_deterministic_y(&crossed_panel());
     let budget = LsmrOptions {
         tol: 1e-14,
         maxiter,
         ..Default::default()
     };
-    let solver = Solver::new(design, None, adaptive(eager_stall())).expect("solver");
+    let solver = Solver::new(crossed_panel(), None, adaptive(eager_stall())).expect("solver");
     let result = solver.solve(&y, &budget).expect("solve");
 
     assert_eq!(solver.has_escalated(), escalates);

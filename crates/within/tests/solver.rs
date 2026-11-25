@@ -348,3 +348,95 @@ fn test_demeaned_equals_residual_of_returned_x(
 
     common::assert_demeaned_is_residual(categories.view(), &y, &result, 1e-12);
 }
+
+/// Weights below the rescale threshold still square to past `f64::MAX` in `diag(S)`'s energies.
+#[rstest]
+#[case::off(PreconditionerConfig::Off)]
+#[case::diagonal(PreconditionerConfig::Diagonal)]
+fn large_weights_keep_an_exact_fit(#[case] precond: PreconditionerConfig) {
+    let categories = array![[0u32, 0], [0, 1], [1, 0], [1, 1]];
+    let weights = [1e200; 4];
+    let y = [0.0, 0.0, 1.0, 1.0];
+    let solver = Solver::new(categories.view(), Some(&weights), &precond).expect("solver build");
+    let result = solver.solve(&y, &default_params()).expect("solve");
+    assert!(result.converged);
+    assert!(
+        result.demeaned.iter().all(|r| r.abs() < 1e-9),
+        "{:?}",
+        result.demeaned
+    );
+}
+
+/// Firms `0` and `2` are each pinned by one light row beside a heavy one: their energy left after
+/// `e` is far below the rounding of `‖a_j‖² − absorbed`, yet both are identified.
+#[test]
+fn a_column_identified_by_light_rows_is_not_absorbed() {
+    // Columns: firm, then `e` (ties go to the last term). `y = α_e + γ_firm` fits exactly.
+    let categories = array![[0u32, 0], [0, 1], [1, 1], [1, 1], [2, 1], [2, 2]];
+    let weights = [1e8, 1e-10, 1.0, 1.0, 1e-10, 1e8];
+    let (alpha, gamma) = ([1.0, 2.0, 3.0], [10.0, 20.0, 30.0]);
+    let y: Vec<f64> = categories
+        .rows()
+        .into_iter()
+        .map(|row| gamma[row[0] as usize] + alpha[row[1] as usize])
+        .collect();
+    let tight = LsmrOptions {
+        tol: 1e-12,
+        ..default_params()
+    };
+    let solver = Solver::new(
+        categories.view(),
+        Some(&weights),
+        &PreconditionerConfig::Diagonal,
+    )
+    .expect("solver build");
+    let result = solver.solve(&y, &tight).expect("solve");
+    assert!(result.converged);
+    assert!(
+        result.demeaned.iter().all(|r| r.abs() < 1e-6),
+        "{:?}",
+        result.demeaned
+    );
+}
+
+/// A level of `e` whose weights sum below `1/f64::MAX` keeps a finite `G_ee⁻¹`. LSMR's tolerance
+/// cannot see a row 1e-310 lighter than the rest, so only the others must fit.
+#[rstest]
+#[case::alone(array![[0u32], [0]], vec![1e-320, 1e-320])]
+#[case::beside_unit_weights(
+    array![[0u32, 0], [0, 1], [1, 1], [1, 2], [2, 2]],
+    vec![1e-310, 1e-310, 1.0, 1.0, 1.0]
+)]
+fn subnormal_level_weights_stay_finite(
+    #[case] categories: ndarray::Array2<u32>,
+    #[case] weights: Vec<f64>,
+) {
+    // `y = Σ_t (t + 1)·level` fits exactly.
+    let y: Vec<f64> = categories
+        .rows()
+        .into_iter()
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .map(|(t, &l)| (t + 1) as f64 * l as f64)
+                .sum()
+        })
+        .collect();
+    let solver = Solver::new(
+        categories.view(),
+        Some(&weights),
+        &PreconditionerConfig::Off,
+    )
+    .expect("solver build");
+    let result = solver.solve(&y, &default_params()).expect("solve");
+    assert!(result.converged);
+    let heaviest = weights.iter().copied().fold(0.0, f64::max);
+    for (r, &w) in result.demeaned.iter().zip(&weights) {
+        assert!(r.is_finite(), "{:?}", result.demeaned);
+        assert!(
+            w < 1e-300 * heaviest || r.abs() < 1e-9,
+            "{:?}",
+            result.demeaned
+        );
+    }
+}
