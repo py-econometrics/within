@@ -12,7 +12,7 @@ use crate::config::{LsmrOptions, PreconditionerConfig};
 use crate::design::{CoefficientAddress, CoefficientLayout};
 use crate::design::{Design, Effect};
 use crate::precond::Preconditioner;
-use crate::system::{DesignOperator, Fit, Gramian, OrthogonalDesign};
+use crate::system::{Fit, Gramian, OrthogonalDesign, SystemMatrix};
 use crate::{BuildError, BuildWarning, WithinError};
 
 #[cfg(test)]
@@ -261,7 +261,7 @@ impl<'a> Solver<'a> {
         // The whole ladder shares the caller's budget; each rung resumes from the last one's x.
         let mut x: Option<Vec<f64>> = None;
         let mut spent = 0;
-        let a = DesignOperator::new(&self.design);
+        let a = SystemMatrix::new(&self.design);
         loop {
             let started = Instant::now();
             let result = rung.run(&a, rhs.weighted(), lsmr, spent, x.as_deref())?;

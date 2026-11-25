@@ -8,8 +8,8 @@ fn noise(seed: usize) -> f64 {
 
 mod design_tests {
     use crate::design::Design;
-    use crate::system::DesignOperator;
     use crate::system::OrthogonalDesign;
+    use crate::system::SystemMatrix;
     use schwarz_precond::Operator;
 
     fn make_test_design() -> OrthogonalDesign<'static> {
@@ -24,7 +24,7 @@ mod design_tests {
         let design = make_test_design();
         let x = vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0, 40.0];
         let mut y = vec![0.0; 5];
-        DesignOperator::new(&design)
+        SystemMatrix::new(&design)
             .apply(&x, &mut y)
             .expect("apply succeeds");
         assert_eq!(y, vec![11.0, 12.0, 22.0, 33.0, 41.0]);
@@ -35,7 +35,7 @@ mod design_tests {
         let design = make_test_design();
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0; 7];
-        DesignOperator::new(&design)
+        SystemMatrix::new(&design)
             .apply_adjoint(&r, &mut x)
             .expect("apply_adjoint succeeds");
         assert_eq!(x, vec![6.0, 5.0, 4.0, 3.0, 3.0, 4.0, 5.0]);
@@ -66,7 +66,7 @@ mod design_tests {
         let mut ej = vec![0.0f64; design.unknowns().len()];
         ej[0] = 1.0;
         let mut y = vec![0.0f64; design.n_obs()];
-        DesignOperator::new(&design)
+        SystemMatrix::new(&design)
             .apply(&ej, &mut y)
             .expect("apply succeeds");
 
@@ -85,7 +85,7 @@ mod design_tests {
 
         let ones = vec![1.0f64; design.n_obs()];
         let mut x = vec![0.0f64; design.unknowns().len()];
-        DesignOperator::new(&design)
+        SystemMatrix::new(&design)
             .apply_adjoint(&ones, &mut x)
             .expect("apply_adjoint succeeds");
 
@@ -103,7 +103,7 @@ mod design_tests {
         let design = make_single_factor_design();
         let x = vec![10.0, 20.0, 30.0];
         let mut y = vec![0.0f64; 5];
-        DesignOperator::new(&design)
+        SystemMatrix::new(&design)
             .apply(&x, &mut y)
             .expect("apply succeeds");
         assert_eq!(y, vec![10.0, 10.0, 20.0, 20.0, 30.0]);
@@ -114,7 +114,7 @@ mod design_tests {
         let design = make_single_factor_design();
         let r = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let mut x = vec![0.0f64; 3];
-        DesignOperator::new(&design)
+        SystemMatrix::new(&design)
             .apply_adjoint(&r, &mut x)
             .expect("apply_adjoint succeeds");
         assert_eq!(x, vec![3.0, 7.0, 5.0]);
@@ -124,8 +124,8 @@ mod design_tests {
 mod slope_design_tests {
     use super::noise;
     use crate::design::{Channel, Design, Effect, LevelReduction};
-    use crate::system::DesignOperator;
     use crate::system::OrthogonalDesign;
+    use crate::system::SystemMatrix;
     use schwarz_precond::Operator;
 
     /// Dense design matrix from the design's internal (post-sort) columns —
@@ -189,7 +189,7 @@ mod slope_design_tests {
             .map(|j| noise(7_000 + j))
             .collect();
         let mut got = vec![0.0; design.n_obs()];
-        DesignOperator::new(&design).apply(&x, &mut got).unwrap();
+        SystemMatrix::new(&design).apply(&x, &mut got).unwrap();
         let expect: Vec<f64> = dense
             .iter()
             .map(|row| row.iter().zip(&x).map(|(d, xj)| d * xj).sum())
@@ -198,7 +198,7 @@ mod slope_design_tests {
 
         let r: Vec<f64> = (0..design.n_obs()).map(|i| noise(9_000 + i)).collect();
         let mut got_t = vec![0.0; design.unknowns().len()];
-        DesignOperator::new(&design)
+        SystemMatrix::new(&design)
             .apply_adjoint(&r, &mut got_t)
             .unwrap();
         let mut expect_t = vec![0.0; design.unknowns().len()];
@@ -256,7 +256,7 @@ mod slope_design_tests {
         let r: Vec<f64> = (0..design.n_obs()).map(|i| noise(29 * i + 5)).collect();
         inflight::parallel::testing::assert_pool_independent(|| {
             let mut dtr = vec![0.0; design.unknowns().len()];
-            DesignOperator::new(&design)
+            SystemMatrix::new(&design)
                 .apply_adjoint(&r, &mut dtr)
                 .unwrap();
             dtr.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
@@ -290,9 +290,9 @@ mod slope_design_tests {
         let r: Vec<f64> = (0..n).map(|i| noise(29 * i + 5)).collect();
 
         let mut dx = vec![0.0; n];
-        DesignOperator::new(&design).apply(&x, &mut dx).unwrap();
+        SystemMatrix::new(&design).apply(&x, &mut dx).unwrap();
         let mut dtr = vec![0.0; design.unknowns().len()];
-        DesignOperator::new(&design)
+        SystemMatrix::new(&design)
             .apply_adjoint(&r, &mut dtr)
             .unwrap();
 
@@ -306,7 +306,7 @@ mod slope_design_tests {
 }
 
 mod weighted_adjoint_proptests {
-    use crate::system::DesignOperator;
+    use crate::system::SystemMatrix;
     use proptest::prelude::*;
     use schwarz_precond::Operator;
 
@@ -347,11 +347,11 @@ mod weighted_adjoint_proptests {
                 .collect();
 
             let mut dx = vec![0.0f64; n_rows];
-            DesignOperator::new(&design).apply(&x, &mut dx).unwrap();
+            SystemMatrix::new(&design).apply(&x, &mut dx).unwrap();
             let lhs: f64 = dx.iter().zip(&r).map(|(dxi, ri)| dxi * ri).sum();
 
             let mut dtr = vec![0.0f64; n_dofs];
-            DesignOperator::new(&design).apply_adjoint(&r, &mut dtr).unwrap();
+            SystemMatrix::new(&design).apply_adjoint(&r, &mut dtr).unwrap();
             let rhs: f64 = x.iter().zip(dtr.iter()).map(|(xi, wi)| xi * wi).sum();
 
             prop_assert!(

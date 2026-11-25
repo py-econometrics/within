@@ -11,7 +11,7 @@ mod tests;
 mod weights;
 
 pub(crate) use gramian::Gramian;
-pub(crate) use operator::DesignOperator;
+pub(crate) use operator::SystemMatrix;
 use weights::RowWeights;
 
 use std::borrow::Cow;

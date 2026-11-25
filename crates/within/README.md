@@ -59,7 +59,7 @@ The crate is organized in four layers, each depending only on the ones above it:
 2. **`system`** — The least-squares system for one weighting `W`.
    `OrthogonalDesign` is `D̃ = D·R`, each term's slopes orthogonalized within
    each level, with the products `D̃ x` and `D̃ᵀ v` over its term blocks;
-   `DesignOperator` is `A = sqrt(W) D̃`, the operator LSMR iterates on;
+   `SystemMatrix` is `A = sqrt(W) D̃`, the system matrix LSMR iterates on;
    `Gramian` is `G = AᵀA`, which the preconditioners read.
 
 3. **`precond`** — `M ≈ G⁻¹`: the diagonal and the additive Schwarz

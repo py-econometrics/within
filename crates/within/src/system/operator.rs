@@ -9,14 +9,14 @@ use super::OrthogonalDesign;
 #[cfg(test)]
 mod tests;
 
-/// `A = W^{1/2} D̃`: the operator LSMR iterates on.
-pub(crate) struct DesignOperator<'p> {
+/// `A = W^{1/2} D̃`: the system matrix LSMR iterates on.
+pub(crate) struct SystemMatrix<'p> {
     design: &'p OrthogonalDesign<'p>,
     /// Each term's fold workspace for the adjoint.
     folds: Workspaces,
 }
 
-impl<'p> DesignOperator<'p> {
+impl<'p> SystemMatrix<'p> {
     pub(crate) fn new(design: &'p OrthogonalDesign<'p>) -> Self {
         Self {
             design,
@@ -26,7 +26,7 @@ impl<'p> DesignOperator<'p> {
 }
 
 /// `AᵀA = D̃ᵀWD̃` is the Gramian.
-impl Operator for DesignOperator<'_> {
+impl Operator for SystemMatrix<'_> {
     fn nrows(&self) -> usize {
         self.design.n_obs()
     }
