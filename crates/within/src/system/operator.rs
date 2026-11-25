@@ -6,20 +6,20 @@ mod tests;
 
 use schwarz_precond::{MemStack, Operator, StackReq};
 
-use super::blocks::{with_split, DynamicKept, KeptTerms, ReducedKernel, SplitRows};
+use super::blocks::{with_split, KeptSide, KeptTerms, ReducedKernel, RowScale, SplitRows};
 use super::term::TermRow;
 use super::ReducedDesign;
 
 /// `A_r = (I − P_e) A_k`: the system matrix LSMR iterates on.
 pub(crate) struct SystemMatrix<'p> {
     design: &'p ReducedDesign<'p>,
-    /// `A_k` where its terms do not fuse.
-    kept: DynamicKept<'p>,
+    /// `A_k` at the shape it runs at.
+    kept: KeptSide<'p>,
 }
 
 impl<'p> SystemMatrix<'p> {
     pub(crate) fn new(design: &'p ReducedDesign<'p>) -> Self {
-        let kept = DynamicKept::new(&design.split);
+        let kept = KeptSide::new(&design.split);
         Self { design, kept }
     }
 }
@@ -55,7 +55,7 @@ struct Forward<'a> {
 
 impl ReducedKernel for Forward<'_> {
     #[inline(always)]
-    fn run<T: KeptTerms, R: TermRow>(self, rows: &SplitRows<'_, T, R>) {
+    fn run<T: KeptTerms + Copy, R: TermRow, W: RowScale>(self, rows: &SplitRows<'_, T, R, W>) {
         rows.map_projected(self.y, self.stack, self.x);
     }
 }
@@ -71,7 +71,7 @@ struct Adjoint<'a> {
 
 impl ReducedKernel for Adjoint<'_> {
     #[inline(always)]
-    fn run<T: KeptTerms, R: TermRow>(self, rows: &SplitRows<'_, T, R>) {
+    fn run<T: KeptTerms + Copy, R: TermRow, W: RowScale>(self, rows: &SplitRows<'_, T, R, W>) {
         rows.sum_projected(self.x, self.stack, self.v);
         self.absorbed.mask(self.x);
     }

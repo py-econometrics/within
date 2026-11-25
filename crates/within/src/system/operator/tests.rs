@@ -200,6 +200,19 @@ mod slope_design_tests {
                 Effect::new(&g, true, []).unwrap(),
                 Effect::new(&h, true, [&z[6][..]]).unwrap(),
             ],
+            vec![Effect::new(&f, true, [&z[4][..], &z[7][..]]).unwrap()],
+            vec![
+                Effect::new(&f, true, [&z[4][..], &z[7][..]]).unwrap(),
+                Effect::new(&g, true, []).unwrap(),
+            ],
+            vec![
+                Effect::new(&f, true, [&z[4][..]]).unwrap(),
+                Effect::new(&g, true, [&z[5][..], &z[6][..]]).unwrap(),
+            ],
+            vec![
+                Effect::new(&f, true, [&z[4][..], &z[7][..]]).unwrap(),
+                Effect::new(&g, true, [&z[5][..], &z[6][..]]).unwrap(),
+            ],
         ];
         for kept in kept_sets {
             // One slope fuses `e`; four leave it dynamic.
