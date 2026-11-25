@@ -308,7 +308,7 @@ fn orthogonalization_is_bitwise_identical_across_thread_counts() {
             .unwrap()
     };
     let bits = |threads: usize| {
-        schwarz_precond::parallel::in_pool(threads, || {
+        inflight::parallel::testing::in_pool(threads, || {
             let design = prepare();
             let mut x: Vec<f64> = (0..design.unknowns().len())
                 .map(|i| (i as f64).sin())

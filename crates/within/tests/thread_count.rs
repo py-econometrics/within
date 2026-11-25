@@ -1,9 +1,9 @@
 //! A solve returns the same bits at any thread count, run after run (#472).
 
+use inflight::parallel::testing::in_pool;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rstest::{fixture, rstest};
-use schwarz_precond::parallel::in_pool;
 use within::{Design, Effect, LsmrOptions, PreconditionerConfig, Solver};
 
 #[path = "common/orchestrate_helpers.rs"]

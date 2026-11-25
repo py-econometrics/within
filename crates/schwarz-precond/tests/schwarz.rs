@@ -5,9 +5,9 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use inflight::parallel::testing::in_pool;
 use rayon::prelude::*;
 use rstest::{fixture, rstest};
-use schwarz_precond::parallel::in_pool;
 use schwarz_precond::{
     mlsmr, IdentityOp, LocalSolveError, LocalSolver, MemBuffer, MemStack, MlsmrOptions, Operator,
     PartitionWeights, SchwarzPreconditioner, StackReq, SubdomainCore, SubdomainEntry, Threads,

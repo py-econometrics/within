@@ -12,15 +12,22 @@ mod tests;
 
 use super::finite;
 use super::magnitude::{exponent, ldexp, Magnitude};
-use crate::parallel::{fold, Split};
 use crate::{MemBuffer, MemStack, Operator, SolveError, StackReq};
-use rayon::iter::{IndexedParallelIterator, ParallelIterator};
-use rayon::prelude::{ParallelSlice, ParallelSliceMut};
+use inflight::parallel::{Blocks, Split, Threads};
 
 /// Below this count the elementwise kernels run sequentially; rayon wake/steal would dominate.
-pub(super) const LSMR_PAR_THRESHOLD: usize = 10_000;
+const LSMR_PAR_THRESHOLD: usize = 10_000;
 /// Per-worker chunk size: large enough to clear rayon dispatch, small enough to stay L1-resident.
 pub(super) const LSMR_UPDATE_CHUNK: usize = 4096;
+
+/// Every thread for an elementwise kernel over `len` entries past [`LSMR_PAR_THRESHOLD`], else the
+/// calling thread.
+pub(super) fn update_threads(len: usize) -> Threads {
+    match len >= LSMR_PAR_THRESHOLD {
+        true => Threads::All,
+        false => Threads::ONE,
+    }
+}
 
 /// Fused `y = x + scale · y` returning `‖y_new‖`; per-chunk partials avoid reduction traffic.
 #[inline]
@@ -52,10 +59,18 @@ fn axpy_with_norm(y: &mut [f64], x: &[f64], scale: f64) -> f64 {
 /// Independent accumulators per leaf: a single add chain is latency-bound and never vectorizes.
 const LANES: usize = 8;
 
+/// Below this count a sum runs on the calling thread: a fork costs more than a sequential sum.
+const LSMR_SUM_PAR_THRESHOLD: usize = 1 << 16;
+
 /// `Σ leaf` over `LSMR_UPDATE_CHUNK` pieces in a tree fixed by the length.
 #[inline]
 fn chunked_sum<P: Split>(input: P, leaf: impl Fn(P) -> f64 + Sync) -> f64 {
-    fold(input, LSMR_UPDATE_CHUNK, &leaf, &|a, b| a + b)
+    let threads = match input.n_items() > LSMR_SUM_PAR_THRESHOLD {
+        true => Threads::All,
+        false => Threads::ONE,
+    };
+    let blocks = Blocks::new(input, LSMR_UPDATE_CHUNK);
+    threads.fold_tree(blocks, |(_, piece)| leaf(piece), |a, b| a + b)
 }
 
 /// `y = alpha * x + beta * y`. Parallel above the threshold.
@@ -67,13 +82,8 @@ pub(super) fn axpby(y: &mut [f64], x: &[f64], alpha: f64, beta: f64) {
             *yi = alpha * xi + beta * *yi;
         }
     };
-    if y.len() >= LSMR_PAR_THRESHOLD {
-        y.par_chunks_mut(LSMR_UPDATE_CHUNK)
-            .zip(x.par_chunks(LSMR_UPDATE_CHUNK))
-            .for_each(|(y_c, x_c)| seq(y_c, x_c));
-    } else {
-        seq(y, x);
-    }
+    update_threads(y.len())
+        .for_each_chunk((y, x), LSMR_UPDATE_CHUNK, |_, (y_c, x_c)| seq(y_c, x_c));
 }
 
 /// `y /= d` without over/underflow unless `y / d` does, to one rounding at `f64::MAX` (`drscl`).
@@ -88,11 +98,7 @@ fn normalize(y: &mut [f64], d: f64) {
                 c.iter_mut().for_each(|yi| *yi /= d);
             }
         };
-        if y.len() >= LSMR_PAR_THRESHOLD {
-            y.par_chunks_mut(LSMR_UPDATE_CHUNK).for_each(seq);
-        } else {
-            seq(y);
-        }
+        update_threads(y.len()).for_each_chunk(y, LSMR_UPDATE_CHUNK, |_, c| seq(c));
     }
 }
 

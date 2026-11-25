@@ -1,6 +1,6 @@
 //! `A = W^{1/2} D̃`: the system matrix LSMR iterates on, over `D̃`'s term blocks.
 
-use schwarz_precond::parallel::Workspaces;
+use inflight::parallel::Workspaces;
 use schwarz_precond::{MemStack, Operator, StackReq};
 
 use super::product::{gather, scatter};

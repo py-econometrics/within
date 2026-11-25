@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use schwarz_precond::parallel::{fold, for_each_piece, Split};
+use inflight::parallel::{fold_leaves, Blocks, Chunks, Split, Threads};
 use schwarz_precond::{MemStack, StackReq};
 
 use super::RowIndex;
@@ -86,7 +86,10 @@ impl LevelReduction {
     pub(super) fn scratch<S>(&self, n_rows: usize, n_levels: usize) -> StackReq {
         match self {
             Self::ByLevel(_) => StackReq::EMPTY,
-            Self::ByRow => StackReq::new::<S>(by_row_leaves(n_rows, n_levels) * n_levels),
+            Self::ByRow => {
+                let leaves = fold_leaves(n_rows, by_row_leaf_len(n_rows, n_levels));
+                StackReq::new::<S>(leaves * n_levels)
+            }
         }
     }
 
@@ -102,54 +105,45 @@ impl LevelReduction {
         mut out: O,
         stack: &mut MemStack,
     ) {
-        let parallel = levels.len() > PAR_THRESHOLD;
         let n_levels = out.n_items();
         match self {
             Self::ByLevel(rows) => {
                 let level_fold = |level: usize| {
-                    let leaf = |positions: Range<usize>| {
-                        let mut state = init;
-                        rows.for_each_row(positions, |i| step(&mut state, level, i));
-                        state
-                    };
-                    fold(
-                        rows.positions(level),
-                        LEVEL_LEAF,
-                        &leaf,
-                        &|mut left, right| {
+                    Threads::All.fold_tree(
+                        Blocks::new(rows.positions(level), LEVEL_LEAF),
+                        |(_, positions)| {
+                            let mut state = init;
+                            rows.for_each_row(positions, |i| step(&mut state, level, i));
+                            state
+                        },
+                        |mut left, right| {
                             merge(&mut left, &right);
                             left
                         },
                     )
                 };
-                let fill = |first: usize, mut slots: O| {
+                let threads = match levels.len() > PAR_THRESHOLD {
+                    true => Threads::All,
+                    false => Threads::ONE,
+                };
+                let groups = Blocks::new(out, LEVEL_GROUP);
+                threads.for_each_item(groups, |_, (first, mut slots)| {
                     for k in 0..slots.n_items() {
                         slots.set(k, level_fold(first + k));
                     }
-                };
-                if parallel {
-                    for_each_piece(Groups(out), &|g, Groups(group)| {
-                        fill(g * LEVEL_GROUP, group)
-                    });
-                } else {
-                    fill(0, out);
-                }
+                });
             }
             Self::ByRow => {
                 let leaf_len = by_row_leaf_len(levels.len(), n_levels);
-                let leaves = by_row_leaves(levels.len(), n_levels);
+                let leaves = fold_leaves(levels.len(), leaf_len);
                 let (mut partials, _) = stack.make_with(leaves * n_levels, |_| init);
-                let all = RowLeaves {
-                    rows: 0..levels.len(),
-                    partials: &mut partials,
-                    leaf_len,
-                    n_levels,
-                };
-                let states = fold(
-                    all,
-                    leaf_len,
-                    &|leaf| leaf.scatter(levels, step),
-                    &|left, right| {
+                let states = Threads::All.fold_tree(
+                    (
+                        Blocks::new(levels, leaf_len),
+                        Chunks::equal(&mut partials, leaves),
+                    ),
+                    |((start, levels), states)| scatter_rows(start, levels, states, step),
+                    |left, right| {
                         for (l, r) in left.iter_mut().zip(&*right) {
                             merge(l, r);
                         }
@@ -164,72 +158,25 @@ impl LevelReduction {
     }
 }
 
-/// Level slots cut into [`LEVEL_GROUP`] levels per piece, the last one shorter.
-struct Groups<O>(O);
-
-impl<O: Split> Split for Groups<O> {
-    fn n_items(&self) -> usize {
-        self.0.n_items().div_ceil(LEVEL_GROUP)
+/// `step` over each row of `levels`, the first `start`, into its level's state of `states`.
+/// Not a closure: `step` as an argument lets LLVM hoist a load of it out of the row loop.
+fn scatter_rows<'a, S>(
+    start: usize,
+    levels: &[u32],
+    states: &'a mut [S],
+    step: &impl Fn(&mut S, usize, usize),
+) -> &'a mut [S] {
+    for (i, &level) in (start..).zip(levels) {
+        let level = level as usize;
+        step(&mut states[level], level, i);
     }
-    fn split_at(self, mid: usize) -> (Self, Self) {
-        let cut = (mid * LEVEL_GROUP).min(self.0.n_items());
-        let (left, right) = self.0.split_at(cut);
-        (Groups(left), Groups(right))
-    }
+    states
 }
 
 /// Rows per leaf of a by-row fold: merging costs ∝ L per state word, a leaf ∝ its rows per word,
 /// so 4·L rows bound the merges.
 fn by_row_leaf_len(n_rows: usize, n_levels: usize) -> usize {
     (4 * n_levels).min(n_rows.div_ceil(2)).max(65_536)
-}
-
-/// Leaves of a by-row fold over `n_rows` rows, at least one.
-fn by_row_leaves(n_rows: usize, n_levels: usize) -> usize {
-    n_rows.div_ceil(by_row_leaf_len(n_rows, n_levels)).max(1)
-}
-
-/// Rows in leaves of `leaf_len`, each leaf with its own `n_levels` states of `partials`.
-struct RowLeaves<'a, S> {
-    rows: Range<usize>,
-    partials: &'a mut [S],
-    leaf_len: usize,
-    n_levels: usize,
-}
-
-impl<'a, S> RowLeaves<'a, S> {
-    /// `step` over every row into this leaf's states, which it returns.
-    fn scatter(self, levels: &[u32], step: &impl Fn(&mut S, usize, usize)) -> &'a mut [S] {
-        let states = &mut self.partials[..self.n_levels];
-        for i in self.rows {
-            let level = levels[i] as usize;
-            step(&mut states[level], level, i);
-        }
-        states
-    }
-}
-
-impl<S: Send> Split for RowLeaves<'_, S> {
-    fn n_items(&self) -> usize {
-        self.rows.len()
-    }
-    fn split_at(self, mid: usize) -> (Self, Self) {
-        let (rows, rest) = self.rows.split_at(mid);
-        let (partials, others) = self
-            .partials
-            .split_at_mut(mid / self.leaf_len * self.n_levels);
-        let left = RowLeaves {
-            rows,
-            partials,
-            ..self
-        };
-        let right = RowLeaves {
-            rows: rest,
-            partials: others,
-            ..self
-        };
-        (left, right)
-    }
 }
 
 /// The rows of each level, ascending: the inverse of the row → level map.

@@ -5,10 +5,8 @@
 //! that yield Algorithm 2.8 of Fong & Saunders, advances the `(x, h, h̄)`
 //! solution recurrence, and tracks the dual stopping criterion.
 
-use super::bidiag::{BidiagStep, LSMR_PAR_THRESHOLD, LSMR_UPDATE_CHUNK};
+use super::bidiag::{update_threads, BidiagStep, LSMR_UPDATE_CHUNK};
 use super::magnitude::Magnitude;
-use rayon::iter::{IndexedParallelIterator, ParallelIterator};
-use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
 /// Givens rotation built from `(a, b)` so applying it yields `(r, 0)`, `r = hypot(a, b)`.
 #[derive(Clone, Copy)]
@@ -277,16 +275,10 @@ impl SolutionState {
             }
         };
 
-        if n >= LSMR_PAR_THRESHOLD {
-            self.h_bar
-                .par_chunks_mut(LSMR_UPDATE_CHUNK)
-                .zip(self.h.par_chunks_mut(LSMR_UPDATE_CHUNK))
-                .zip(self.x.par_chunks_mut(LSMR_UPDATE_CHUNK))
-                .zip(v.par_chunks(LSMR_UPDATE_CHUNK))
-                .for_each(|(((hb_c, h_c), x_c), v_c)| chunk(hb_c, h_c, x_c, v_c));
-        } else {
-            chunk(&mut self.h_bar, &mut self.h, &mut self.x, v);
-        }
+        let all = (&mut self.h_bar[..], &mut self.h[..], &mut self.x[..], v);
+        update_threads(n).for_each_chunk(all, LSMR_UPDATE_CHUNK, |_, (hb_c, h_c, x_c, v_c)| {
+            chunk(hb_c, h_c, x_c, v_c)
+        });
     }
 
     pub(super) fn into_x(self) -> Vec<f64> {

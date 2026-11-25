@@ -4,8 +4,8 @@ use rstest::rstest;
 
 use super::super::*;
 use crate::lsmr::fixtures::{lsmr, DiagOp};
-use crate::parallel::assert_pool_independent;
 use crate::{Operator, SolveError};
+use inflight::parallel::testing::assert_pool_independent;
 
 /// `A x` with `y[i] = x[i mod n] + ½ x[(7i + 3) mod n]`: large enough that every reduction splits.
 struct Wrapped {
@@ -66,7 +66,7 @@ fn fingerprint(r: &LsmrResult) -> (Vec<u64>, usize, u64, u64, LsmrStopReason) {
     )
 }
 
-/// `n` above `fold`'s sequential cutoff, so column-length reductions also run across threads.
+/// `n` past `LSMR_SUM_PAR_THRESHOLD`, so column-length reductions also run across threads.
 fn wrapped() -> Wrapped {
     Wrapped {
         m: 300_000,
