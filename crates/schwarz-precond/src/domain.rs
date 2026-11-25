@@ -11,9 +11,9 @@ use crate::error::BuildError;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub enum PartitionWeights {
-    /// All weights are 1.0 (no shared DOFs).
+    /// All weights are 1.0: shared DOFs sum their subdomains' corrections unweighted.
     Uniform,
-    /// Non-uniform weights (1/√count for shared DOFs).
+    /// One weight per local DOF, e.g. `1/√c` for a DOF in `c` subdomains.
     NonUniform(Vec<f64>),
 }
 

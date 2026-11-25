@@ -3,16 +3,14 @@
 mod channel;
 mod effect;
 mod incidence;
-mod term;
 
 pub(crate) use channel::CoefficientPosition;
 pub use channel::{Channel, ChannelPair, CoefficientAddress};
 pub use effect::Effect;
 pub use incidence::CoefficientLayout;
-pub(crate) use incidence::{Column, Incidence, LevelSlots, TermIncidence, TermLayout, Unknowns};
 #[cfg(test)]
-pub(crate) use incidence::{LevelReduction, LEVEL_LEAF};
-pub(crate) use term::{RowKernel, TermBlock};
+pub(crate) use incidence::LEVEL_LEAF;
+pub(crate) use incidence::{Column, Incidence, LevelSegments, TermIncidence, TermLayout, Unknowns};
 
 use crate::BuildError;
 use ndarray::{ArrayView2, Axis};

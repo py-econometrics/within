@@ -23,7 +23,8 @@ class PreconditionerConfig:
         def __init__(self) -> None: ...
 
     class Diagonal(PreconditionerConfig):
-        """Diagonal/Jacobi preconditioner using ``diag(D^T W D)^{-1}``."""
+        """Diagonal/Jacobi preconditioner using ``diag(S)^{-1}``, ``S`` the Gramian of the
+        system with the largest term partialled out."""
 
         def __init__(self) -> None: ...
 
@@ -154,7 +155,8 @@ class SolveResult:
         converged: Whether the LSMR solver met the convergence tolerance.
         iterations: Total number of LSMR iterations performed.
         residual: Relative normal-equation residual
-            ``||D^T W (y - Dx)|| / ||D^T W y||`` estimated from the LSMR
+            ``||A_r^T r|| / ||A_r^T b||`` of the system LSMR iterates on, the
+            largest term partialled out, estimated from the LSMR
             recurrence at no extra cost. Exact for an unpreconditioned solve;
             measured in the preconditioner's metric otherwise. An ``Adaptive``
             hand-off is rebased onto the original response, so the escalating

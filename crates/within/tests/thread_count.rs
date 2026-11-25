@@ -4,7 +4,7 @@ use inflight::parallel::testing::in_pool;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use rstest::{fixture, rstest};
-use within::{Design, Effect, LsmrOptions, PreconditionerConfig, Solver};
+use within::{Design, Effect, LsmrOptions, PreconditionerConfig, Solver, Staleness};
 
 #[path = "common/orchestrate_helpers.rs"]
 mod common;
@@ -96,12 +96,20 @@ impl Panel {
     }
 }
 
+/// Escalates on the first stall, so the ladder reaches its Schwarz build on this panel.
+fn eager_adaptive() -> PreconditionerConfig {
+    PreconditionerConfig::Adaptive {
+        stall: Staleness::try_new(1, 0.0).expect("valid staleness"),
+        schwarz: within::Schwarz::default(),
+    }
+}
+
 /// Off and the diagonal run different LSMR drivers; Adaptive builds a weighted Schwarz on a stall.
 #[rstest]
 #[case::off(PreconditionerConfig::Off, false)]
 #[case::diagonal_weighted(PreconditionerConfig::Diagonal, true)]
 #[case::additive(common::additive(), false)]
-#[case::adaptive_weighted(common::adaptive(), true)]
+#[case::adaptive_weighted(eager_adaptive(), true)]
 fn a_solve_returns_the_same_bits_at_any_thread_count(
     panel: &Panel,
     #[case] precond: PreconditionerConfig,

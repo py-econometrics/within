@@ -73,7 +73,7 @@ fn test_empty_categories_via_solve() {
 fn test_preconditioner_dimension_mismatch_error() {
     // Reusing a larger design's preconditioner must trip the dim check in Solver::new.
     let big = Array2::from_shape_vec((4, 2), vec![0u32, 0, 1, 1, 2, 0, 3, 1]).expect("big array");
-    let small = Array2::from_shape_vec((3, 2), vec![0u32, 0, 1, 1, 0, 0]).expect("small array");
+    let small = Array2::from_shape_vec((3, 2), vec![0u32, 0, 1, 0, 0, 0]).expect("small array");
 
     let big_solver = Solver::new(big.view(), None, None).expect("big solver");
     let prebuilt = big_solver

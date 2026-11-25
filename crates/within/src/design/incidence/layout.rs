@@ -157,11 +157,6 @@ impl CoefficientLayout {
         (0..self.terms[term].n_columns()).map(move |column| Channel { term, column })
     }
 
-    /// What `channel` multiplies.
-    pub(crate) fn column(&self, channel: Channel) -> Column {
-        self.terms[channel.term].column(channel.column)
-    }
-
     pub(crate) fn caller_address(&self, position: CoefficientPosition) -> CoefficientAddress {
         let level = self.terms[position.channel.term]
             .encoding
@@ -174,22 +169,24 @@ impl CoefficientLayout {
     }
 }
 
-/// The coefficients a system solves for, `x`: every term's block, back to back in term order.
+/// The coefficients a system solves for, `x`: the kept terms' blocks back to back, every term but
+/// the sort term. Block `k` is `starts[k]..starts[k + 1]`, of term `terms[k]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Unknowns {
-    /// Term `t`'s block in `x` is `starts[t]..starts[t + 1]`.
     starts: Vec<usize>,
+    terms: Vec<usize>,
 }
 
 impl Unknowns {
-    pub(crate) fn new(layout: &CoefficientLayout) -> Self {
+    pub(crate) fn new(layout: &CoefficientLayout, sort_term: usize) -> Self {
+        let terms: Vec<usize> = (0..layout.n_terms()).filter(|&t| t != sort_term).collect();
         let starts = std::iter::once(0)
-            .chain(layout.terms.iter().scan(0, |end, term| {
-                *end += term.n_dofs();
+            .chain(terms.iter().scan(0, |end, &t| {
+                *end += layout.terms[t].n_dofs();
                 Some(*end)
             }))
             .collect();
-        Self { starts }
+        Self { starts, terms }
     }
 
     /// The number of unknowns.
@@ -197,22 +194,25 @@ impl Unknowns {
         self.starts[self.starts.len() - 1]
     }
 
-    /// Term `term`'s block in `x`.
-    pub(crate) fn block(&self, term: usize) -> Range<usize> {
-        self.starts[term]..self.starts[term + 1]
+    /// Each block with its term, in block order.
+    pub(crate) fn blocks(&self) -> impl Iterator<Item = (usize, Range<usize>)> + '_ {
+        self.terms
+            .iter()
+            .zip(self.starts.windows(2))
+            .map(|(&term, ends)| (term, ends[0]..ends[1]))
     }
 
-    /// Where each term's block starts, then where the last ends.
-    pub(crate) fn starts(&self) -> &[usize] {
-        &self.starts
-    }
-
-    /// `channel`'s `n_levels` slots in `x`.
-    pub(crate) fn dofs(&self, layout: &CoefficientLayout, channel: Channel) -> Range<usize> {
-        let (block, local) = (
-            self.block(channel.term),
-            layout.terms[channel.term].block_column(channel.column),
-        );
-        block.start + local.start..block.start + local.end
+    /// Each channel with its `n_levels` slots in `x`, in block order; `layout` is the one the
+    /// blocks are cut from.
+    pub(crate) fn channels<'u>(
+        &'u self,
+        layout: &'u CoefficientLayout,
+    ) -> impl Iterator<Item = (Channel, Range<usize>)> + 'u {
+        self.blocks().flat_map(move |(term, block)| {
+            layout.channels(term).map(move |channel| {
+                let local = layout.terms[term].block_column(channel.column);
+                (channel, block.start + local.start..block.start + local.end)
+            })
+        })
     }
 }

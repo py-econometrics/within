@@ -57,13 +57,14 @@ The crate is organized in four layers, each depending only on the ones above it:
    codes and coefficient layout) and each term's slope columns `X`.
 
 2. **`system`** — The least-squares system for one weighting `W`.
-   `OrthogonalDesign` is `D̃ = D·R`, each term's slopes orthogonalized within
-   each level, with the products `D̃ x` and `D̃ᵀ v` over its term blocks;
-   `SystemMatrix` is `A = sqrt(W) D̃`, the system matrix LSMR iterates on;
-   `Gramian` is `G = AᵀA`, which the preconditioners read.
+   `ReducedDesign` is `D̃ = D·R`, each term's slopes orthogonalized within
+   each level, with the term the rows are sorted by, `e`, eliminated;
+   `SystemMatrix` is `A_r = (I − P_e) sqrt(W) D̃_k`, the system matrix LSMR
+   iterates on; `Gramian` is what the preconditioners read of `S = A_rᵀA_r`:
+   `diag(S)`, and local operators from `G`'s pair blocks.
 
-3. **`precond`** — `M ≈ G⁻¹`: the diagonal and the additive Schwarz
-   preconditioner, whose factor-pair subdomains (`build_local_domains`) wire
+3. **`precond`** — `M ≈ S`: the diagonal and the additive Schwarz
+   preconditioner, whose channel-pair subdomains (`build_local_domains`) wire
    approximate Cholesky local solvers into the generic `schwarz-precond`
    framework.
 

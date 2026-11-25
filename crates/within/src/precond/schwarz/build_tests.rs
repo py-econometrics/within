@@ -10,14 +10,14 @@ use crate::config::{
 };
 use crate::design::Design;
 use crate::system::Gramian;
-use crate::system::OrthogonalDesign;
+use crate::system::ReducedDesign;
 use schwarz_precond::{LocalSolver, MemBuffer, MemStack, Operator, Threads};
 
 const BLOCK_ELIM_NESTED_RAYON_CHILD_ENV: &str = "WITHIN_TEST_BLOCK_ELIM_NESTED_RAYON_CHILD";
 
-fn make_test_data() -> (OrthogonalDesign<'static>, Vec<LocalDomain>) {
+fn make_test_data() -> (ReducedDesign<'static>, Vec<LocalDomain>) {
     let design = Design::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]])
-        .orthogonalize(None)
+        .reduce(None)
         .unwrap();
     let (domain_pairs, _) =
         build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
@@ -26,7 +26,7 @@ fn make_test_data() -> (OrthogonalDesign<'static>, Vec<LocalDomain>) {
 }
 
 /// One plain pair: `n_keep · elim_ratio` levels, each in three weighted cells of `n_keep`.
-fn synthetic_star_design(n_keep: usize, elim_ratio: usize) -> OrthogonalDesign<'static> {
+fn synthetic_star_design(n_keep: usize, elim_ratio: usize) -> ReducedDesign<'static> {
     let (mut rows, mut cols, mut weights) = (Vec::new(), Vec::new(), Vec::new());
     for i in 0..n_keep * elim_ratio {
         for (col, w) in [
@@ -40,7 +40,7 @@ fn synthetic_star_design(n_keep: usize, elim_ratio: usize) -> OrthogonalDesign<'
         }
     }
     let design = Design::from_levels_for_test(vec![rows, cols]);
-    design.orthogonalize(Some(&weights)).unwrap()
+    design.reduce(Some(&weights)).unwrap()
 }
 
 fn run_block_elim_nested_rayon_case() {
@@ -190,7 +190,7 @@ fn signed_wire_fixture_contains_uniform_weights() {
 
     let bytes = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/preconditioner_v23.postcard"
+        "/tests/fixtures/preconditioner_v24.postcard"
     ));
     let preconditioner: Preconditioner = postcard::from_bytes(bytes).expect("signed fixture");
     let Map::Schwarz(additive) = &preconditioner.map else {
