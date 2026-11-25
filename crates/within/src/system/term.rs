@@ -13,7 +13,7 @@ pub(crate) struct TermBlock<'p> {
 }
 
 /// A row `r(i)` of a term's block: its value in each of the term's columns.
-pub(crate) trait TermRow: Sync {
+pub(crate) trait TermRow: Sync + Copy {
     /// The term's column count.
     fn width(&self) -> usize;
 
@@ -85,6 +85,7 @@ impl TermRow for TermBlock<'_> {
 
 /// A block's rows as the type that fits its shape: `I` with the intercept, `S` slopes only, each
 /// with its slope count; `Dynamic` at any other shape.
+#[derive(Clone, Copy)]
 pub(crate) enum Rows<'p> {
     I0(Row<'p, true, 0>),
     I1(Row<'p, true, 1>),

@@ -1,5 +1,5 @@
 //! `D̃`'s rows split around `e`, read a row at a time as `A`'s ([`SplitRows`]): `A_k`'s rows and
-//! `P_l` over `e`'s segments, `A_e` at a fixed width where [`with_split`] fuses it. The rows are
+//! `P_l` over `e`'s segments, each at fixed widths where [`with_split`] fuses them. The rows are
 //! sorted by `e`, so `A_e` is block-diagonal by segment and `G_ee` diagonal: `P_e` acts on each
 //! level's segment alone, `P_l = A_{e,l} G_l⁻¹ A_{e,l}ᵀ`.
 
@@ -8,9 +8,9 @@ use std::ops::Range;
 use rayon::prelude::*;
 use schwarz_precond::{MemBuffer, MemStack, StackReq};
 
-use super::term::{Rows, TermBlock, TermRow};
+use super::term::{Row, Rows, TermBlock, TermRow};
 use super::SplitDesign;
-use crate::design::LevelSegments;
+use crate::design::{FittedMap, FittedSum, LevelSegments};
 
 /// `D̃_k`, the kept terms' block, read a row at a time.
 pub(super) trait KeptTerms: Sync {
@@ -19,6 +19,7 @@ pub(super) trait KeptTerms: Sync {
 }
 
 /// A kept term's rows placed in `x`: column `c` of level `l` at `start + c · n_levels + l`.
+#[derive(Clone, Copy)]
 pub(super) struct KeptRow<'p, R> {
     row: R,
     levels: &'p [u32],
@@ -47,58 +48,120 @@ impl<R: TermRow> KeptTerms for KeptRow<'_, R> {
     }
 }
 
-impl<T: KeptTerms> KeptTerms for &T {
+impl<A: KeptTerms, B: KeptTerms> KeptTerms for (A, B) {
+    #[inline(always)]
+    fn slots(&self, i: usize, mut f: impl FnMut(usize, f64)) {
+        self.0.slots(i, &mut f);
+        self.1.slots(i, &mut f);
+    }
+}
+
+impl<T: KeptTerms + ?Sized> KeptTerms for &T {
     #[inline(always)]
     fn slots(&self, i: usize, f: impl FnMut(usize, f64)) {
         (**self).slots(i, f);
     }
 }
 
-/// Every kept term at any count, each at its own shape: built once per solve, not per row.
-pub(super) struct DynamicKept<'p> {
-    terms: Vec<KeptRow<'p, Rows<'p>>>,
-}
-
-impl<'p> DynamicKept<'p> {
-    pub(super) fn new(design: &'p SplitDesign<'_>) -> Self {
-        let terms = (design.unknowns().blocks())
-            .map(|(t, block)| {
-                let term = design.term(t);
-                KeptRow::new(&term, term.rows(), block.start)
-            })
-            .collect();
-        Self { terms }
-    }
-}
-
-impl KeptTerms for DynamicKept<'_> {
+impl<K: KeptTerms> KeptTerms for [K] {
     #[inline(always)]
     fn slots(&self, i: usize, mut f: impl FnMut(usize, f64)) {
-        for term in &self.terms {
+        for term in self {
             term.slots(i, &mut f);
         }
     }
 }
 
+/// Every kept term at any count, built once per solve, not per row: intercept-only terms read
+/// without a dispatch, any other mix each at its own shape.
+pub(super) enum DynamicKept<'p> {
+    Plain(Vec<KeptRow<'p, Row<'p, true, 0>>>),
+    Mixed(Vec<KeptRow<'p, Rows<'p>>>),
+}
+
+impl<'p> DynamicKept<'p> {
+    pub(super) fn new(design: &'p SplitDesign<'_>) -> Self {
+        let terms = || (design.unknowns().blocks()).map(|(t, at)| (design.term(t), at.start));
+        let plain: Option<Vec<_>> = terms()
+            .map(|(term, at)| match term.rows() {
+                Rows::I0(row) => Some(KeptRow::new(&term, row, at)),
+                _ => None,
+            })
+            .collect();
+        plain.map_or_else(
+            || {
+                Self::Mixed(
+                    terms()
+                        .map(|(term, at)| KeptRow::new(&term, term.rows(), at))
+                        .collect(),
+                )
+            },
+            Self::Plain,
+        )
+    }
+}
+
+impl KeptTerms for DynamicKept<'_> {
+    #[inline(always)]
+    fn slots(&self, i: usize, f: impl FnMut(usize, f64)) {
+        match self {
+            Self::Plain(terms) => terms[..].slots(i, f),
+            Self::Mixed(terms) => terms[..].slots(i, f),
+        }
+    }
+}
+
+/// `W^{1/2}`'s diagonal, read a row at a time.
+pub(super) trait RowScale: Copy + Sync {
+    /// Row `i`'s entry.
+    fn at(&self, i: usize) -> f64;
+}
+
+/// `W = I`: its unit scale folds away.
+#[derive(Clone, Copy)]
+pub(super) struct Unweighted;
+
+impl RowScale for Unweighted {
+    #[inline(always)]
+    fn at(&self, _: usize) -> f64 {
+        1.0
+    }
+}
+
+impl RowScale for &[f64] {
+    #[inline(always)]
+    fn at(&self, i: usize) -> f64 {
+        self[i]
+    }
+}
+
+impl RowScale for Option<&[f64]> {
+    #[inline(always)]
+    fn at(&self, i: usize) -> f64 {
+        self.map_or(1.0, |s| s[i])
+    }
+}
+
 /// `A = W^{1/2} D̃`'s rows split around `e`: `A_k`'s rows, and `P_l` on each of `e`'s segments
 /// from `A_e`'s rows and `G_ee⁻¹`. A fit holds [`width`](Self::width) values.
-pub(super) struct SplitRows<'s, T, R> {
+#[derive(Clone, Copy)]
+pub(super) struct SplitRows<'s, T, R, W = Option<&'s [f64]>> {
     /// `D̃_k`.
     kept: T,
     /// `D̃_e`.
     eliminated: R,
-    sqrt: Option<&'s [f64]>,
+    sqrt: W,
     /// `G_ee⁻¹`, level-major.
     inverse: &'s [f64],
     /// `e`'s segments.
     segments: &'s LevelSegments,
 }
 
-impl<T: KeptTerms, R: TermRow> SplitRows<'_, T, R> {
+impl<T: KeptTerms, R: TermRow, W: RowScale> SplitRows<'_, T, R, W> {
     /// `W^{1/2}`'s entry for row `i`.
     #[inline(always)]
     fn scale(&self, i: usize) -> f64 {
-        self.sqrt.map_or(1.0, |s| s[i])
+        self.sqrt.at(i)
     }
 
     /// `f(j, a)` for each `a = A_k[i, j]` of row `i`.
@@ -144,13 +207,28 @@ impl<T: KeptTerms, R: TermRow> SplitRows<'_, T, R> {
         self.eliminated.row(i, |c, r| f(c, s * r));
     }
 
-    /// `fit = G_l⁻¹ A_{e,l}ᵀ (scale · v)`, `v` level `level`'s segment from row `start`.
+    /// `m = A_eᵀ (scale · v)` over the rows of `v` from row `start`.
     #[inline(always)]
-    fn moments(&self, level: usize, start: usize, v: &[f64], scale: f64, fit: &mut [f64]) {
+    fn moments(&self, start: usize, v: &[f64], scale: f64, m: &mut [f64]) {
         let weight = |i: usize| self.scale(i) * scale;
-        self.eliminated.moments(start, v, weight, fit);
+        self.eliminated.moments(start, v, weight, m);
+    }
+
+    /// `fit = G_l⁻¹ fit`.
+    #[inline(always)]
+    fn solve(&self, level: usize, fit: &mut [f64]) {
         for (f, &g) in fit.iter_mut().zip(self.inverse(level)) {
             *f *= g;
+        }
+    }
+
+    /// `fit = G_l⁻¹ m`, `m = A_{e,l}ᵀ v` in `fit`, refolded from `v`, level `level`'s segment
+    /// from row `start`, if a moment overflowed.
+    #[inline(always)]
+    fn join(&self, level: usize, start: usize, v: &[f64], fit: &mut [f64]) {
+        self.solve(level, fit);
+        if fit.iter().any(|f| !f.is_finite()) {
+            self.refold(level, start, v, fit);
         }
     }
 
@@ -162,25 +240,9 @@ impl<T: KeptTerms, R: TermRow> SplitRows<'_, T, R> {
         v_i - self.scale(i) * f
     }
 
-    /// `fit = G_l⁻¹ A_{e,l}ᵀ v`.
+    /// `segment ← segment − A_e fit` over the rows of `segment` from row `start`.
     #[inline(always)]
-    fn fit(&self, level: usize, start: usize, v: &[f64], fit: &mut [f64]) {
-        self.moments(level, start, v, 1.0, fit);
-    }
-
-    /// [`fit`](Self::fit), refolded at a power-of-two scale if a moment overflowed.
-    #[inline(always)]
-    fn fit_rescued(&self, level: usize, start: usize, v: &[f64], fit: &mut [f64]) {
-        self.fit(level, start, v, fit);
-        if fit.iter().any(|f| !f.is_finite()) {
-            self.refold(level, start, v, fit);
-        }
-    }
-
-    /// `segment ← (I − P_l) segment`, rescued; `fit` keeps `G_l⁻¹ A_{e,l}ᵀ segment`.
-    #[inline(always)]
-    fn project(&self, level: usize, start: usize, segment: &mut [f64], fit: &mut [f64]) {
-        self.fit_rescued(level, start, segment, fit);
+    fn remove_fit(&self, start: usize, segment: &mut [f64], fit: &[f64]) {
         for (k, v) in segment.iter_mut().enumerate() {
             *v = self.remove(start + k, *v, fit);
         }
@@ -195,7 +257,8 @@ impl<T: KeptTerms, R: TermRow> SplitRows<'_, T, R> {
             return;
         }
         let exponent = (peak.log2().floor() as i32).clamp(-1022, 1022);
-        self.moments(level, start, v, 2f64.powi(-exponent), fit);
+        self.moments(start, v, 2f64.powi(-exponent), fit);
+        self.solve(level, fit);
         let unscale = 2f64.powi(exponent);
         fit.iter_mut().for_each(|f| *f *= unscale);
     }
@@ -207,41 +270,39 @@ impl<T: KeptTerms, R: TermRow> SplitRows<'_, T, R> {
     }
 
     /// `y = (I − P_e) A_k x`, rescued.
-    pub(super) fn map_projected(&self, y: &mut [f64], stack: &mut MemStack, x: &[f64]) {
-        let level = |level: usize, start: usize, segment: &mut [f64], fit: &mut [f64]| {
-            for (k, y) in segment.iter_mut().enumerate() {
-                *y = self.dot(start + k, x);
-            }
-            self.project(level, start, segment, fit);
-        };
-        self.segments.map(y, self.width(), stack, &level);
+    pub(super) fn map_projected(&self, y: &mut [f64], stack: &mut MemStack, x: &[f64])
+    where
+        T: Copy,
+    {
+        let pass = ProjectMap { rows: self, x };
+        self.segments
+            .map_fitted(y, self.width(), stack, &pass, None);
     }
 
     /// `out = A_kᵀ (I − P_e) v`, unrescued.
-    pub(super) fn sum_projected(&self, out: &mut [f64], stack: &mut MemStack, v: &[f64]) {
-        let level = |level: usize, rows: Range<usize>, acc: &mut [f64], fit: &mut [f64]| {
-            self.fit(level, rows.start, &v[rows.clone()], fit);
-            for i in rows {
-                self.add(i, self.remove(i, v[i], fit), acc);
-            }
-        };
-        self.segments.sum(out, self.width(), stack, &level);
+    pub(super) fn sum_projected(&self, out: &mut [f64], stack: &mut MemStack, v: &[f64])
+    where
+        T: Copy,
+    {
+        let pass = ProjectSum { rows: self, v };
+        self.segments.sum_fitted(out, self.width(), stack, &pass);
     }
 
     /// `v ← (I − P_e) v` twice, rescued, the second pass removing what the first left in
     /// rounding. Returns `G_ee⁻¹ A_eᵀ v`, both passes' fits summed, level-major.
     pub(super) fn partial_out(&self, v: &mut [f64]) -> Vec<f64> {
         let width = self.width();
-        let mut fits = vec![0.0; self.inverse.len()];
-        let level = |second: &mut Vec<f64>, level, start, segment: &mut [f64], fit: &mut [f64]| {
-            self.project(level, start, segment, fit);
-            self.project(level, start, segment, second);
-            for (f, s) in fit.iter_mut().zip(second.iter()) {
-                *f += s;
-            }
-        };
-        (self.segments).map_levels(v, &mut fits, width, || vec![0.0; width], &level);
-        fits
+        let mut buffer = MemBuffer::new(self.segments.scratch(0, width));
+        let mut fits = [vec![0.0; self.inverse.len()], vec![0.0; self.inverse.len()]];
+        for fits in &mut fits {
+            let (pass, stack) = (PartialOut { rows: self }, MemStack::new(&mut buffer));
+            (self.segments).map_fitted(v, width, stack, &pass, Some(fits));
+        }
+        let [mut first, second] = fits;
+        for (f, s) in first.iter_mut().zip(&second) {
+            *f += s;
+        }
+        first
     }
 
     /// `W^{1/2} y − A_k x`.
@@ -305,13 +366,90 @@ impl<T: KeptTerms, R: TermRow> SplitRows<'_, T, R> {
     }
 }
 
+/// [`SplitRows::map_projected`]'s pass.
+struct ProjectMap<'a, 's, T, R, W> {
+    rows: &'a SplitRows<'s, T, R, W>,
+    x: &'a [f64],
+}
+
+impl<T: KeptTerms + Copy, R: TermRow, W: RowScale> FittedMap for ProjectMap<'_, '_, T, R, W> {
+    #[inline]
+    fn moments(&self, _: usize, start: usize, segment: &mut [f64], m: &mut [f64]) {
+        // Copied: read through `self`, each row reloads `rows` after a store to `segment`.
+        let rows = *self.rows;
+        for (k, y) in segment.iter_mut().enumerate() {
+            *y = rows.dot(start + k, self.x);
+        }
+        rows.moments(start, segment, 1.0, m);
+    }
+
+    #[inline]
+    fn fit(&self, level: usize, start: usize, segment: &[f64], m: &mut [f64]) {
+        self.rows.join(level, start, segment, m);
+    }
+
+    #[inline]
+    fn apply(&self, _: usize, start: usize, segment: &mut [f64], fit: &[f64]) {
+        self.rows.remove_fit(start, segment, fit);
+    }
+}
+
+/// [`SplitRows::partial_out`]'s pass: `v ← (I − P_e) v`, rescued.
+struct PartialOut<'a, 's, T, R, W> {
+    rows: &'a SplitRows<'s, T, R, W>,
+}
+
+impl<T: KeptTerms, R: TermRow, W: RowScale> FittedMap for PartialOut<'_, '_, T, R, W> {
+    #[inline]
+    fn moments(&self, _: usize, start: usize, segment: &mut [f64], m: &mut [f64]) {
+        self.rows.moments(start, segment, 1.0, m);
+    }
+
+    #[inline]
+    fn fit(&self, level: usize, start: usize, segment: &[f64], m: &mut [f64]) {
+        self.rows.join(level, start, segment, m);
+    }
+
+    #[inline]
+    fn apply(&self, _: usize, start: usize, segment: &mut [f64], fit: &[f64]) {
+        self.rows.remove_fit(start, segment, fit);
+    }
+}
+
+/// [`SplitRows::sum_projected`]'s pass.
+struct ProjectSum<'a, 's, T, R, W> {
+    rows: &'a SplitRows<'s, T, R, W>,
+    v: &'a [f64],
+}
+
+impl<T: KeptTerms + Copy, R: TermRow, W: RowScale> FittedSum for ProjectSum<'_, '_, T, R, W> {
+    #[inline]
+    fn moments(&self, _: usize, rows: Range<usize>, m: &mut [f64]) {
+        self.rows.moments(rows.start, &self.v[rows], 1.0, m);
+    }
+
+    #[inline]
+    fn fit(&self, level: usize, m: &mut [f64]) {
+        self.rows.solve(level, m);
+    }
+
+    #[inline]
+    fn apply(&self, _: usize, rows: Range<usize>, fit: &[f64], acc: &mut [f64]) {
+        // Copied: read through `self`, each row reloads `split` after a store to `acc`.
+        let split = *self.rows;
+        for (i, &v_i) in rows.clone().zip(&self.v[rows]) {
+            split.add(i, split.remove(i, v_i, fit), acc);
+        }
+    }
+}
+
 impl<'s> SplitDesign<'s> {
-    /// `A` split around `e` with `kept` for `A_k` and `eliminated` for `A_e`.
-    fn split<T, R>(&'s self, kept: T, eliminated: R) -> SplitRows<'s, T, R> {
+    /// `A` split around `e` with `kept` for `A_k`, `eliminated` for `A_e` and `sqrt` for `W^{1/2}`.
+    fn split<T, R, W>(&'s self, kept: T, eliminated: R, sqrt: W) -> SplitRows<'s, T, R, W> {
         SplitRows {
             kept,
             eliminated,
-            sqrt: self.weights.sqrt(),
+            sqrt,
             inverse: &self.eliminated_inverse,
             segments: self.incidence.segments(),
         }
@@ -319,34 +457,113 @@ impl<'s> SplitDesign<'s> {
 
     /// `A` split around `e` at any shape.
     pub(super) fn dynamic(&'s self) -> SplitRows<'s, DynamicKept<'s>, TermBlock<'s>> {
-        self.split(DynamicKept::new(self), self.term(self.eliminated()))
+        self.split(
+            DynamicKept::new(self),
+            self.term(self.eliminated()),
+            self.weights.sqrt(),
+        )
     }
 }
 
 /// A product over `A`'s rows split around `e`.
 pub(super) trait ReducedKernel {
-    fn run<T: KeptTerms, R: TermRow>(self, rows: &SplitRows<'_, T, R>);
+    fn run<T: KeptTerms + Copy, R: TermRow, W: RowScale>(self, rows: &SplitRows<'_, T, R, W>);
 }
 
-/// Runs `kernel` on `A` split around `e`, `A_e` at its [`Rows`] shape and `A_k` from `kept`.
+/// Runs `kernel` on `A` split around `e` at fixed widths where fused: `e` at every [`Rows`] shape,
+/// `A_k` at `kept`'s, and `W^{1/2}` as [`Unweighted`] where `W = I`.
 pub(super) fn with_split(
     design: &SplitDesign<'_>,
-    kept: &DynamicKept<'_>,
+    kept: &KeptSide<'_>,
     kernel: impl ReducedKernel,
 ) {
+    match design.term(design.eliminated()).rows() {
+        Rows::I0(row) => with_kept(design, kept, kernel, row),
+        Rows::I1(row) => with_kept(design, kept, kernel, row),
+        Rows::I2(row) => with_kept(design, kept, kernel, row),
+        Rows::I3(row) => with_kept(design, kept, kernel, row),
+        Rows::S1(row) => with_kept(design, kept, kernel, row),
+        Rows::S2(row) => with_kept(design, kept, kernel, row),
+        Rows::S3(row) => with_kept(design, kept, kernel, row),
+        Rows::Dynamic(block) => with_kept(design, kept, kernel, block),
+    }
+}
+
+/// `A_k`'s rows at the shape they run at, classified once per solve: one or two kept terms at
+/// fixed widths, each an intercept with at most two slopes, else [`DynamicKept`].
+pub(super) enum KeptSide<'p> {
+    One(FusedKept<'p>),
+    Pair(FusedKept<'p>, FusedKept<'p>),
+    Dynamic(DynamicKept<'p>),
+}
+
+impl<'p> KeptSide<'p> {
+    pub(super) fn new(design: &'p SplitDesign<'_>) -> Self {
+        let mut kept =
+            (design.unknowns().blocks()).map(|(t, at)| FusedKept::of(design.term(t), at.start));
+        match (kept.next(), kept.next(), kept.next()) {
+            (Some(Some(a)), None, None) => Self::One(a),
+            (Some(Some(a)), Some(Some(b)), None) => Self::Pair(a, b),
+            _ => Self::Dynamic(DynamicKept::new(design)),
+        }
+    }
+}
+
+/// A kept term at a shape the kept side fuses.
+#[derive(Clone, Copy)]
+pub(super) enum FusedKept<'p> {
+    Plain(KeptRow<'p, Row<'p, true, 0>>),
+    OneSlope(KeptRow<'p, Row<'p, true, 1>>),
+    TwoSlopes(KeptRow<'p, Row<'p, true, 2>>),
+}
+
+impl<'p> FusedKept<'p> {
+    /// `term`, its block from `start` in `x`, if an intercept with at most two slopes.
+    fn of(term: TermBlock<'p>, start: usize) -> Option<Self> {
+        match term.rows() {
+            Rows::I0(row) => Some(Self::Plain(KeptRow::new(&term, row, start))),
+            Rows::I1(row) => Some(Self::OneSlope(KeptRow::new(&term, row, start))),
+            Rows::I2(row) => Some(Self::TwoSlopes(KeptRow::new(&term, row, start))),
+            _ => None,
+        }
+    }
+}
+
+/// Runs `kernel` with `eliminated` and `A_k` at `kept`'s shape.
+#[inline(always)]
+fn with_kept<R: TermRow>(
+    design: &SplitDesign<'_>,
+    kept: &KeptSide<'_>,
+    kernel: impl ReducedKernel,
+    eliminated: R,
+) {
+    use FusedKept::{OneSlope, Plain, TwoSlopes};
     macro_rules! run {
-        ($eliminated:expr) => {
-            kernel.run(&design.split(kept, $eliminated))
+        ($kept:expr) => {
+            match design.weights.sqrt() {
+                None => kernel.run(&design.split($kept, eliminated, Unweighted)),
+                Some(sqrt) => kernel.run(&design.split($kept, eliminated, sqrt)),
+            }
         };
     }
-    match design.term(design.eliminated()).rows() {
-        Rows::I0(row) => run!(row),
-        Rows::I1(row) => run!(row),
-        Rows::I2(row) => run!(row),
-        Rows::I3(row) => run!(row),
-        Rows::S1(row) => run!(row),
-        Rows::S2(row) => run!(row),
-        Rows::S3(row) => run!(row),
-        Rows::Dynamic(block) => run!(block),
+    match kept {
+        KeptSide::One(a) => match *a {
+            Plain(a) => run!(a),
+            OneSlope(a) => run!(a),
+            TwoSlopes(a) => run!(a),
+        },
+        KeptSide::Pair(a, b) => match (*a, *b) {
+            (Plain(a), Plain(b)) => run!((a, b)),
+            (OneSlope(a), OneSlope(b)) => run!((a, b)),
+            (TwoSlopes(a), TwoSlopes(b)) => run!((a, b)),
+            // Narrower first, whichever comes first in `x`.
+            (Plain(a), OneSlope(b)) | (OneSlope(b), Plain(a)) => run!((a, b)),
+            (Plain(a), TwoSlopes(b)) | (TwoSlopes(b), Plain(a)) => run!((a, b)),
+            (OneSlope(a), TwoSlopes(b)) | (TwoSlopes(b), OneSlope(a)) => run!((a, b)),
+        },
+        KeptSide::Dynamic(dynamic) => match dynamic {
+            DynamicKept::Plain(terms) => run!(&terms[..]),
+            DynamicKept::Mixed(terms) => run!(&terms[..]),
+        },
     }
 }
