@@ -264,7 +264,7 @@ impl<'a> Solver<'a> {
         let a = SystemMatrix::new(&self.design);
         loop {
             let started = Instant::now();
-            let result = rung.run(&a, rhs.weighted(), lsmr, spent, x.as_deref())?;
+            let result = rung.run(&a, rhs.rhs(), lsmr, spent, x.as_deref())?;
             seconds.lsmr += started.elapsed().as_secs_f64();
             spent += result.iterations;
             if result.stop_reason == LsmrStopReason::Escalated {
