@@ -10,7 +10,7 @@ use schwarz_precond::{
 
 use crate::config::{LsmrOptions, PreconditionerConfig, Rung, Staleness};
 use crate::precond::Preconditioner;
-use crate::system::{DesignOperator, Gramian};
+use crate::system::{Gramian, SystemMatrix};
 use crate::{BuildError, BuildWarning};
 
 /// A rung's settled build: its map, or `None` where it has nothing to act on.
@@ -41,7 +41,7 @@ impl Current<'_> {
     /// (`I` without one), handing off on its stall.
     pub(crate) fn run(
         &self,
-        a: &DesignOperator<'_>,
+        a: &SystemMatrix<'_>,
         b: &[f64],
         lsmr: &LsmrOptions,
         spent: usize,
