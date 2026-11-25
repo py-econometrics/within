@@ -125,7 +125,7 @@ impl<'a> OrthogonalDesign<'a> {
         if let Some((index, &value)) = y.iter().enumerate().find(|&(_, &v)| !v.is_finite()) {
             return Err(WithinError::InvalidResponse { index, value });
         }
-        let y = self.incidence.permute_obs_in(y);
+        let y = self.incidence.order().permute_in(y);
         let weighted = self.weights.scaled(&y);
         Ok(Response {
             design: self,
@@ -192,7 +192,7 @@ impl Response<'_> {
         design.back_transform(&mut x);
         Fit {
             x,
-            demeaned: design.incidence.permute_obs_out(demeaned),
+            demeaned: design.incidence.order().permute_out(demeaned),
         }
     }
 }

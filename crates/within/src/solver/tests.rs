@@ -238,7 +238,7 @@ fn akm_panel(
 /// Largest absolute within-level mean of `demeaned`, over the levels of every term whose
 /// normal equations force one: only an intercept makes the within-level sum a residual leg.
 fn max_abs_group_mean(design: &OrthogonalDesign<'_>, demeaned: &[f64]) -> f64 {
-    let demeaned = design.incidence().permute_obs_in(demeaned);
+    let demeaned = design.incidence().order().permute_in(demeaned);
     design
         .terms()
         .filter(|t| t.layout().intercept())

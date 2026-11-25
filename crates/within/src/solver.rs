@@ -123,7 +123,7 @@ pub struct SolveResult {
     /// Demeaned response: `y - D x` (length = n_obs), in caller order.
     ///
     /// Invariant: any per-observation field added here must be translated
-    /// back from internal order via `Incidence::permute_obs_out` before being
+    /// back from internal order via `RowOrder::permute_out` before being
     /// stored, or it leaks the locality-sorted row order to the caller.
     pub demeaned: Vec<f64>,
     /// Whether the iterative solver converged within `maxiter` iterations.

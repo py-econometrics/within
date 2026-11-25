@@ -9,9 +9,7 @@ pub(crate) use channel::CoefficientPosition;
 pub use channel::{Channel, ChannelPair, CoefficientAddress};
 pub use effect::Effect;
 pub use incidence::CoefficientLayout;
-pub(crate) use incidence::{
-    Column, Incidence, LevelSlots, TermIncidence, TermLayout, Unknowns, LEVEL_GROUP,
-};
+pub(crate) use incidence::{Column, Incidence, LevelSlots, TermIncidence, TermLayout, Unknowns};
 #[cfg(test)]
 pub(crate) use incidence::{LevelReduction, LEVEL_LEAF};
 pub(crate) use term::{RowKernel, TermBlock};
@@ -109,7 +107,7 @@ impl<'a> Design<'a> {
             .map(|columns| Slopes {
                 columns: columns
                     .into_iter()
-                    .map(|z| incidence.permute_obs_in(z))
+                    .map(|z| incidence.order().permute_in(z))
                     .collect(),
             })
             .collect();

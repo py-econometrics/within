@@ -3,15 +3,17 @@
 mod encoding;
 mod layout;
 mod level_reduction;
+mod level_segments;
 mod row_index;
 
 pub(crate) use encoding::FactorEncoding;
 pub use layout::CoefficientLayout;
 pub(crate) use layout::{Column, TermLayout, Unknowns};
+pub(crate) use level_reduction::{LevelReduction, LevelSlots};
+use level_segments::LevelSegments;
 #[cfg(test)]
-pub(crate) use level_reduction::LEVEL_LEAF;
-pub(crate) use level_reduction::{LevelReduction, LevelSlots, LEVEL_GROUP};
-pub(crate) use row_index::RowIndex;
+pub(crate) use level_segments::LEVEL_LEAF;
+use row_index::RowIndex;
 
 use std::borrow::Cow;
 
@@ -94,40 +96,67 @@ impl TermRows<'_> {
     }
 }
 
+/// The internal row order: the caller's rows sorted by the sort term's levels.
+#[derive(Clone, Debug)]
+pub(crate) struct RowOrder {
+    /// `perm[k]` = caller's index of the row at internal position `k`; `None` when the caller's
+    /// rows were already sorted.
+    perm: Option<RowIndex>,
+}
+
+impl RowOrder {
+    /// Caller order → internal order: `out[k] = v[perm[k]]`; passes `v` through when unpermuted.
+    pub(crate) fn permute_in<'v>(&self, v: impl Into<Cow<'v, [f64]>>) -> Cow<'v, [f64]> {
+        let v = v.into();
+        match &self.perm {
+            None => v,
+            Some(perm) => Cow::Owned(perm.gather(&v)),
+        }
+    }
+
+    /// Internal order → caller order: `out[perm[k]] = v[k]`.
+    pub(crate) fn permute_out(&self, v: Vec<f64>) -> Vec<f64> {
+        match &self.perm {
+            None => v,
+            Some(perm) => perm.scatter(&v),
+        }
+    }
+}
+
 /// `E`: per term the level of each row, with the coefficient layout and the row order. Weight-free,
 /// so a design and its orthogonalization share it.
 #[derive(Clone, Debug)]
 pub(crate) struct Incidence<'a> {
     layout: CoefficientLayout,
-    /// Rows in internal order (caller's, or an owned locality-sorted copy).
+    order: RowOrder,
+    /// Every term, in term order, its rows in the internal order.
     terms: Vec<TermRows<'a>>,
-    /// `obs_perm[k]` = caller's original index of the observation at internal position `k`.
-    obs_perm: Option<RowIndex>,
 }
 
 impl<'a> Incidence<'a> {
-    /// `E` for each term's internal level positions, its rows sorted by `layout`'s dominant term so
-    /// that term's gather/scatter runs sequentially.
+    /// `E` for each term's internal level positions, its rows sorted by the term with the most
+    /// coefficients, ties to the last, so each of that term's levels is one segment of rows.
     pub(super) fn new(mut levels: Vec<Cow<'a, [u32]>>, layout: CoefficientLayout) -> Self {
-        let dominant = layout.dominant();
+        let sort_term = (0..layout.n_terms())
+            .max_by_key(|&t| layout.term(t).n_dofs())
+            .expect("a design has a term");
         let n_levels = |t: usize| layout.term(t).n_levels();
-        let (dominant_reduction, obs_perm) =
-            match LevelReduction::of_sorted(&levels[dominant], n_levels(dominant)) {
-                Some(split) => (split, None),
-                None => {
-                    let (offsets, perm) = RowIndex::argsort(&levels[dominant], n_levels(dominant));
-                    for levels in levels.iter_mut() {
-                        *levels = Cow::Owned(perm.gather(levels));
-                    }
-                    (LevelReduction::sorted(offsets), Some(perm))
+        let (segments, perm) = match LevelSegments::of(&levels[sort_term], n_levels(sort_term)) {
+            Some(segments) => (segments, None),
+            None => {
+                let (offsets, perm) = RowIndex::argsort(&levels[sort_term], n_levels(sort_term));
+                for levels in levels.iter_mut() {
+                    *levels = Cow::Owned(perm.gather(levels));
                 }
-            };
-        let dominant_rows = TermRows {
-            levels: levels.remove(dominant),
-            reduction: dominant_reduction,
+                (LevelSegments::new(offsets), Some(perm))
+            }
         };
-        let others: Vec<usize> = (0..layout.n_terms()).filter(|&t| t != dominant).collect();
-        // Factors nested in the dominant one come out sorted and need no row index.
+        let sorted = TermRows {
+            levels: levels.remove(sort_term),
+            reduction: LevelReduction::Segments(segments, None),
+        };
+        let others: Vec<usize> = (0..layout.n_terms()).filter(|&t| t != sort_term).collect();
+        // Factors nested in the sorted one come out sorted and need no row index.
         let mut terms: Vec<TermRows> = levels
             .into_par_iter()
             .zip(others)
@@ -136,11 +165,11 @@ impl<'a> Incidence<'a> {
                 levels,
             })
             .collect();
-        terms.insert(dominant, dominant_rows);
+        terms.insert(sort_term, sorted);
         Self {
             layout,
+            order: RowOrder { perm },
             terms,
-            obs_perm,
         }
     }
 
@@ -148,13 +177,18 @@ impl<'a> Incidence<'a> {
     pub(super) fn into_owned(self) -> Incidence<'static> {
         Incidence {
             layout: self.layout,
+            order: self.order,
             terms: self.terms.into_iter().map(TermRows::into_owned).collect(),
-            obs_perm: self.obs_perm,
         }
     }
 
     pub(crate) fn layout(&self) -> &CoefficientLayout {
         &self.layout
+    }
+
+    /// The internal row order.
+    pub(crate) fn order(&self) -> &RowOrder {
+        &self.order
     }
 
     /// Term `term`'s `E_t`.
@@ -167,23 +201,5 @@ impl<'a> Incidence<'a> {
 
     pub(crate) fn n_obs(&self) -> usize {
         self.terms[0].levels.len()
-    }
-
-    /// Caller order → internal order: `out[k] = v[obs_perm[k]]`; passes `v` through when
-    /// unpermuted.
-    pub(crate) fn permute_obs_in<'v>(&self, v: impl Into<Cow<'v, [f64]>>) -> Cow<'v, [f64]> {
-        let v = v.into();
-        match &self.obs_perm {
-            None => v,
-            Some(perm) => Cow::Owned(perm.gather(&v)),
-        }
-    }
-
-    /// Internal order → caller order: `out[obs_perm[k]] = v[k]`.
-    pub(crate) fn permute_obs_out(&self, v: Vec<f64>) -> Vec<f64> {
-        match &self.obs_perm {
-            None => v,
-            Some(perm) => perm.scatter(&v),
-        }
     }
 }
