@@ -49,7 +49,8 @@ impl RowWeights {
             1.0
         };
         let sqrt: Vec<f64> = incidence
-            .permute_obs_in(weights)
+            .order()
+            .permute_in(weights)
             .iter()
             .map(|weight| (scale * weight).sqrt())
             .collect();

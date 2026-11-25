@@ -324,7 +324,7 @@ fn orthogonalization_is_bitwise_identical_across_thread_counts() {
                 .count();
             let largest_by_level = design
                 .terms()
-                .filter(|t| matches!(t.incidence().reduction(), LevelReduction::ByLevel(_)))
+                .filter(|t| matches!(t.incidence().reduction(), LevelReduction::Segments(..)))
                 .map(|t| {
                     let mut rows = vec![0usize; t.layout().n_levels()];
                     for &l in t.levels() {

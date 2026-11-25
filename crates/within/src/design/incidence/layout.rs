@@ -137,13 +137,6 @@ impl CoefficientLayout {
         &self.terms
     }
 
-    /// The term with the most coefficients, ties to the last: the rows are sorted by it.
-    pub(crate) fn dominant(&self) -> usize {
-        (0..self.terms.len())
-            .max_by_key(|&t| self.terms[t].n_dofs())
-            .expect("a design has a term")
-    }
-
     /// Term `term`'s block in `β`: the terms in order, back to back.
     pub(crate) fn term_dofs(&self, term: usize) -> Range<usize> {
         let start: usize = self.terms[..term].iter().map(TermLayout::n_dofs).sum();

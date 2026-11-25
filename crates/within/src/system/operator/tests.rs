@@ -275,12 +275,12 @@ mod slope_design_tests {
         ];
         for (t, by_level) in design.terms().zip(by_level) {
             assert_eq!(
-                matches!(t.incidence().reduction(), LevelReduction::ByLevel(_)),
+                matches!(t.incidence().reduction(), LevelReduction::Segments(..)),
                 by_level
             );
         }
         assert!(matches!(
-            design.incidence().permute_obs_in(&[0.0; 300_000]),
+            design.incidence().order().permute_in(&[0.0; 300_000]),
             std::borrow::Cow::Borrowed(_)
         ));
 

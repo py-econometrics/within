@@ -8,13 +8,15 @@ mod level_moments;
 
 use super::RowWeights;
 use crate::design::Slopes;
-use crate::design::LEVEL_GROUP;
 use crate::design::{TermIncidence, TermLayout};
 use crate::linalg::{dot, GramBasisWorkspace};
 use level_moments::{LevelMean, LevelMoments};
 
 /// Rows per parallel task of a sweep's row pass.
 const ROW_CHUNK: usize = 1 << 14;
+
+/// Levels per parallel task of a per-level pass.
+const LEVEL_GROUP: usize = 1024;
 
 /// `X_t = X̃_t·R_t⁻¹`: the term's slopes `W`-orthogonal within each level, with `R_t`.
 pub(super) struct OrthogonalSlopes {
