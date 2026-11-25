@@ -21,9 +21,9 @@ pub(super) fn gather(
     debug_assert_eq!(design.n_obs(), dst.len());
     debug_assert_eq!(src.len(), design.unknowns().len());
 
-    dst.fill(0.0);
-
     for_each_chunk(dst, |chunk, row_start| {
+        // Zeroed per chunk, in cache, on the chunk's own thread.
+        chunk.fill(0.0);
         for (t, term) in design.terms().enumerate() {
             term.visit_rows(GatherTerm {
                 chunk: &mut *chunk,
