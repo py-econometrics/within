@@ -310,14 +310,14 @@ pub(super) struct BidiagStep {
 
 /// `Aᵀ rhs = 2ᵏ·g` for the `g` that [`adjoint_image`] leaves.
 #[derive(Clone, Copy)]
-pub(super) struct AdjointImage {
+struct AdjointImage {
     k: i32,
     g_norm: f64,
 }
 
 impl AdjointImage {
     /// `‖Aᵀ rhs‖`, which may not be a double.
-    pub(super) fn norm(self) -> Magnitude {
+    fn norm(self) -> Magnitude {
         Magnitude::product(self.g_norm, ldexp(1.0, self.k))
     }
 }
@@ -367,12 +367,12 @@ pub(super) trait Bidiagonalization {
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError>;
     /// Spend the stream for the `rhs − A x` that [`residual_norm`](Self::residual_norm) staged.
     fn into_residual(self) -> Vec<f64>;
-    /// After `α₁ = 0`, a gradient the metric hid: `‖Aᵀ rhs‖ / ‖rhs‖` and `Aᵀ b`.
+    /// After `α₁ = 0`, a gradient the metric hid: `‖Aᵀ rhs‖ / ‖rhs‖` and `‖Aᵀ b‖`.
     fn hidden_gradient(
         &mut self,
         _b: &[f64],
         _b_norm: f64,
-    ) -> Result<Option<(f64, AdjointImage)>, SolveError> {
+    ) -> Result<Option<(f64, Magnitude)>, SolveError> {
         Ok(None)
     }
 }
@@ -479,7 +479,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         &mut self,
         b: &[f64],
         b_norm: f64,
-    ) -> Result<Option<(f64, AdjointImage)>, SolveError> {
+    ) -> Result<Option<(f64, Magnitude)>, SolveError> {
         // At `α₁ = 0` the stream holds `p̃ = Aᵀu` for the unit `u`, so `‖p̃‖ = ‖Aᵀ rhs‖ / ‖rhs‖`.
         let plain = par_norm(&self.bufs.p_tilde);
         if plain == 0.0 {
@@ -488,7 +488,7 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
         let bufs = &mut self.bufs;
         let stack = MemStack::new(&mut bufs.stack);
         let b_image = adjoint_image(self.operator, b, b_norm, &mut bufs.u, &mut bufs.atu, stack)?;
-        Ok(Some((plain, b_image)))
+        Ok(Some((plain, b_image.norm())))
     }
 }
 

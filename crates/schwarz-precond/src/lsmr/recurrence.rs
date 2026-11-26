@@ -7,6 +7,8 @@
 
 use super::bidiag::{update_threads, BidiagStep, LSMR_UPDATE_CHUNK};
 use super::magnitude::Magnitude;
+use super::LsmrStopReason;
+use crate::SolveError;
 
 /// Givens rotation built from `(a, b)` so applying it yields `(r, 0)`, `r = hypot(a, b)`.
 #[derive(Clone, Copy)]
@@ -286,14 +288,6 @@ impl SolutionState {
     }
 }
 
-/// Outcome of a single convergence test: continue iterating, or audit the iterate.
-pub(super) enum Stop {
-    /// Neither estimate meets the tolerance.
-    Continue,
-    /// The `‖r_k‖` or `‖Aᵀr_k‖` estimate meets it; only measuring `x` can certify a stop.
-    Audit,
-}
-
 /// Immutable stopping criteria for one LSMR run.
 #[derive(Clone, Copy)]
 pub(super) struct ConvergenceCriteria {
@@ -317,15 +311,19 @@ impl ConvergenceCriteria {
         }
     }
 
-    /// Whether a measured `‖r‖` meets the absolute tolerance.
-    pub(super) fn residual_certifies(&self, residual: f64) -> bool {
-        residual <= self.abs_tol
-    }
-
-    /// Whether measured `‖r‖` and `‖Aᵀr‖` meet the relative tolerance: with `floor ≤ ‖A‖₂`, the
-    /// ratio bounds the true backward error from above.
-    pub(super) fn gradient_certifies(&self, residual: f64, normar: Magnitude, floor: f64) -> bool {
-        backward_error(normar, floor, residual) <= self.rel_tol
+    /// The stop a measured `‖r‖` certifies, asking `gradient` for the measured `‖Aᵀr‖` and a
+    /// `floor ≤ ‖A‖₂` only when `‖r‖` alone misses: their ratio bounds the true backward error.
+    pub(super) fn certify(
+        &self,
+        residual: f64,
+        gradient: impl FnOnce() -> Result<(Magnitude, f64), SolveError>,
+    ) -> Result<Option<LsmrStopReason>, SolveError> {
+        if residual <= self.abs_tol {
+            return Ok(Some(LsmrStopReason::ResidualTolerance));
+        }
+        let (normar, floor) = gradient()?;
+        Ok((backward_error(normar, floor, residual) <= self.rel_tol)
+            .then_some(LsmrStopReason::NormalEquationTolerance))
     }
 }
 
@@ -346,18 +344,14 @@ impl ConvergenceState {
         self.alpha = s.alpha;
     }
 
-    /// Whether the stream's own estimates trigger an audit.
-    pub(super) fn check(&self, r: &LsmrRecurrenceState) -> Stop {
+    /// Whether the stream's own `‖r_k‖` or `‖Aᵀr_k‖` estimate meets the tolerance; only measuring
+    /// `x` can certify a stop.
+    pub(super) fn triggers_audit(&self, r: &LsmrRecurrenceState) -> bool {
         let unit_residual = r.unit_residual();
         // The stream's own backward error; `β₁` cancels, so the `u₁` form stays in range.
         let normar = Magnitude::from(r.normal_eq_qr.normar());
-        if r.rhs_norm * unit_residual <= self.criteria.abs_tol
+        r.rhs_norm * unit_residual <= self.criteria.abs_tol
             || backward_error(normar, self.a_norm, unit_residual) <= self.criteria.rel_tol
-        {
-            Stop::Audit
-        } else {
-            Stop::Continue
-        }
     }
 }
 

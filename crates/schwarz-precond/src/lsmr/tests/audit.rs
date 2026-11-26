@@ -65,16 +65,8 @@ impl EscalationPolicy for CountingPolicy {
     }
 }
 
-/// `tol = 1e-10` against `‖b‖ = 1`; an audit's gradient leg sees `‖Aᵀr‖ = 1`, which never certifies.
+/// `tol = 1e-10` against `‖b‖ = 1`; an audit's gradient leg sees `‖Aᵀr‖ = gradient`.
 fn scripted_run(
-    true_residuals: &[f64],
-    maxiter: usize,
-    escalation: Option<&dyn EscalationPolicy>,
-) -> LsmrResult {
-    scripted_run_with_gradient(true_residuals, 1.0, maxiter, escalation)
-}
-
-fn scripted_run_with_gradient(
     true_residuals: &[f64],
     gradient: f64,
     maxiter: usize,
@@ -107,7 +99,7 @@ fn scripted_run_with_gradient(
 
 #[test]
 fn a_stop_the_true_residual_confirms_is_certified() {
-    let r = scripted_run(&[1e-12], 5, None);
+    let r = scripted_run(&[1e-12], 1.0, 5, None);
     assert!(r.converged());
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
     assert_eq!(r.iterations, 1);
@@ -118,7 +110,7 @@ fn a_stop_the_true_residual_confirms_is_certified() {
 /// the result names the certificate that held.
 #[test]
 fn a_residual_stop_the_gradient_certifies_reports_the_normal_equation() {
-    let r = scripted_run_with_gradient(&[0.5], 0.5e-11, 5, None);
+    let r = scripted_run(&[0.5], 0.5e-11, 5, None);
     assert!(r.converged());
     assert_eq!(r.stop_reason, LsmrStopReason::NormalEquationTolerance);
     assert_eq!(r.iterations, 1);
@@ -129,7 +121,7 @@ fn a_residual_stop_the_gradient_certifies_reports_the_normal_equation() {
 /// residual 10× over the tolerance is refuted, however close it sits to the stream's estimate.
 #[rstest]
 fn a_refuted_stop_restarts_from_its_iterate(#[values(1.0, 1e-9)] refuted: f64) {
-    let r = scripted_run(&[refuted, 1e-12], 5, None);
+    let r = scripted_run(&[refuted, 1e-12], 1.0, 5, None);
     assert!(r.converged());
     assert_eq!(r.stop_reason, LsmrStopReason::ResidualTolerance);
     assert_eq!(r.iterations, 2);
@@ -139,7 +131,7 @@ fn a_refuted_stop_restarts_from_its_iterate(#[values(1.0, 1e-9)] refuted: f64) {
 
 #[test]
 fn restarts_are_capped_before_the_stop_is_refused() {
-    let r = scripted_run(&[1.0, 1.0, 1.0], 5, None);
+    let r = scripted_run(&[1.0, 1.0, 1.0], 1.0, 5, None);
     assert!(!r.converged());
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.iterations, 3);
@@ -154,7 +146,7 @@ fn restarts_are_capped_before_the_stop_is_refused() {
 #[case::budget_exhausted(1.0, 1)]
 #[case::non_finite_residual(f64::NAN, 5)]
 fn a_refuted_stop_without_a_restart_is_refused(#[case] true_residual: f64, #[case] maxiter: usize) {
-    let r = scripted_run(&[true_residual], maxiter, None);
+    let r = scripted_run(&[true_residual], 1.0, maxiter, None);
     assert!(!r.converged());
     assert_eq!(r.stop_reason, LsmrStopReason::FalseConvergence);
     assert_eq!(r.iterations, 1);
@@ -225,9 +217,10 @@ fn each_certificate_leg_is_explicit(
     #[case] expected: bool,
 ) {
     let criteria = ConvergenceCriteria::new(1.0, 1e-10);
-    let certifies = criteria.residual_certifies(residual)
-        || criteria.gradient_certifies(residual, Magnitude::from(normar), floor);
-    assert_eq!(certifies, expected);
+    let certified = criteria
+        .certify(residual, || Ok((Magnitude::from(normar), floor)))
+        .unwrap();
+    assert_eq!(certified.is_some(), expected);
 }
 
 /// `M⁻¹ = diag(1, 1e-20)` cannot certify the solution direction it hides.
@@ -322,7 +315,7 @@ fn the_backward_error_survives_the_ends_of_the_range(
 #[test]
 fn a_restarted_pass_gets_its_own_escalation_handler() {
     let policy = CountingPolicy::default();
-    let r = scripted_run(&[1.0, 1e-12], 5, Some(&policy));
+    let r = scripted_run(&[1.0, 1e-12], 1.0, 5, Some(&policy));
 
     assert!(r.converged());
     assert_eq!(r.iterations, 2);

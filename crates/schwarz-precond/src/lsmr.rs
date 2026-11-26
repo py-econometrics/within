@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use crate::{MemBuffer, MemStack, Operator, SolveError};
 use bidiag::{axpby, normalize, par_norm, BidiagStep, Bidiagonalization, StagedStart};
 use magnitude::Magnitude;
-use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState, Stop};
+use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState};
 
 /// Euclidean norm of a vector.
 ///
@@ -70,7 +70,8 @@ impl LsmrResult {
 pub enum LsmrStopReason {
     /// The right-hand side was exactly zero.
     ZeroRhs,
-    /// The initial normal-equation residual was exactly zero: `Aᵀ(b − A x0) = 0`, cold `Aᵀb = 0`.
+    /// The start's gradient vanished in the preconditioner's metric (`α₁ = 0`), and the measured
+    /// `‖r‖` or `‖Aᵀr‖ / (L‖r‖)` certifies the start itself.
     InitialNormalEquationResidualZero,
     /// A measured `‖rₖ‖ ≤ tol·‖b‖`; for a zero `b`, `tol·‖b − A x₀‖`, as no backward error below
     /// `1/κ(A)` exists there.
@@ -443,11 +444,11 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             let b_norm = vec_norm(b);
             let (converged, normal_eq_residual) = match bidiag.hidden_gradient(b, b_norm)? {
                 None => (true, 0.0),
-                Some((per_unit_residual, b_image)) => {
+                Some((per_unit_residual, plain)) => {
                     let normar = Magnitude::product(step1.beta, per_unit_residual);
-                    let plain = b_image.norm();
-                    let converged = criteria.residual_certifies(step1.beta)
-                        || criteria.gradient_certifies(step1.beta, normar, bidiag.norm_floor()?);
+                    let converged = criteria
+                        .certify(step1.beta, || Ok((normar, bidiag.norm_floor()?)))?
+                        .is_some();
                     let relative = if plain.is_normal() {
                         (normar / plain).to_f64()
                     } else {
@@ -486,7 +487,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 solution.update(bidiag.v(), curr_rot, prev_rot);
 
                 // The tolerance test catches breakdown when the residual recurrences collapse.
-                if let Stop::Audit = convergence.check(&recurrence) {
+                if convergence.triggers_audit(&recurrence) {
                     break 'pass None;
                 }
                 if let Some(rule) = escalation.as_deref_mut() {
@@ -494,13 +495,9 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                         iteration: iterations,
                         normal_eq_residual: recurrence.relative_normal_eq_residual(),
                     };
-                    if rule.should_escalate(progress) {
-                        // A rule firing on the last permitted iteration leaves nothing to hand off.
-                        break 'pass Some(if iterations < maxiter {
-                            LsmrStopReason::Escalated
-                        } else {
-                            LsmrStopReason::MaxIterations
-                        });
+                    // A rule firing on the last permitted iteration leaves nothing to hand off.
+                    if rule.should_escalate(progress) && iterations < maxiter {
+                        break 'pass Some(LsmrStopReason::Escalated);
                     }
                 }
                 prev_rot = curr_rot;
@@ -542,44 +539,36 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 true_residual: None,
             });
         }
-        let certified = if criteria.residual_certifies(residual_norm) {
-            Some(LsmrStopReason::ResidualTolerance)
-        } else {
-            let normar = bidiag.plain_gradient(residual_norm)?;
-            let floor = bidiag.norm_floor()?;
-            (criteria.gradient_certifies(residual_norm, normar, floor))
-                .then_some(LsmrStopReason::NormalEquationTolerance)
-        };
-        match certified {
-            Some(stop_reason) => {
-                return Ok(LsmrResult {
-                    x,
-                    iterations,
-                    residual_norm,
-                    normal_eq_residual,
-                    stop_reason,
-                    true_residual: Some(bidiag.into_residual()),
-                });
-            }
+        let certified = criteria.certify(residual_norm, || {
+            Ok((bidiag.plain_gradient(residual_norm)?, bidiag.norm_floor()?))
+        })?;
+        let (stop_reason, normal_eq_residual, true_residual) = match certified {
+            Some(stop_reason) => (
+                stop_reason,
+                normal_eq_residual,
+                Some(bidiag.into_residual()),
+            ),
             None if restarts < MAX_RESTARTS && iterations < maxiter => {
                 restarts += 1;
                 step1 = bidiag.restart(residual_norm)?;
                 base = Some(Cow::Owned(x));
+                continue;
             }
             None => {
                 // The estimate is the refuted claim; a seed from the staged residual measures `x`.
                 let step = bidiag.restart(residual_norm)?;
-                return Ok(LsmrResult {
-                    x,
-                    iterations,
-                    residual_norm,
-                    normal_eq_residual: reference
-                        .relative(Magnitude::product(step.alpha, step.beta)),
-                    stop_reason: LsmrStopReason::FalseConvergence,
-                    true_residual: None,
-                });
+                let measured = reference.relative(Magnitude::product(step.alpha, step.beta));
+                (LsmrStopReason::FalseConvergence, measured, None)
             }
-        }
+        };
+        return Ok(LsmrResult {
+            x,
+            iterations,
+            residual_norm,
+            normal_eq_residual,
+            stop_reason,
+            true_residual,
+        });
     }
 }
 

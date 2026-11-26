@@ -3,7 +3,7 @@
 //! the exact `‖A‖₂ = max dᵢ`, through the default power-iteration norm floor.
 
 use super::super::{splitmix64_unit, vec_norm};
-use crate::lsmr::fixtures::{lsmr, normal_equation_residual};
+use crate::lsmr::fixtures::{lsmr, normal_equation_residual, residual};
 use crate::{MemStack, Operator, SolveError};
 
 /// `[diag(d); 0]`: the zero rows make any `b` with entries there inconsistent.
@@ -58,9 +58,7 @@ fn every_stop_converges_and_meets_its_tolerance() {
                     r.stop_reason
                 );
 
-                let mut ax = vec![0.0; a.nrows()];
-                a.apply(&r.x, &mut ax).unwrap();
-                let residual: Vec<f64> = b.iter().zip(&ax).map(|(b, ax)| b - ax).collect();
+                let residual = residual(&a, &r.x, &b);
                 let a_norm = a.0.iter().fold(0.0f64, |m, &d| m.max(d));
                 let ratio = normal_equation_residual(&a, &r.x, &b) / (a_norm * vec_norm(&residual));
                 // The test recomputes in its own rounding, and allows only that.

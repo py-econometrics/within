@@ -332,10 +332,7 @@ fn test_mlsmr_maxiter_residuals_are_rebased_onto_the_original_rhs() {
         result.normal_eq_residual,
     );
 
-    let mut ax = vec![0.0; op.rows];
-    op.apply(&result.x, &mut ax).expect("apply");
-    let r: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
-    let true_normr = vec_norm(&r);
+    let true_normr = vec_norm(&residual(&op, &result.x, &b));
     assert!((result.residual_norm - true_normr).abs() <= 1e-9 * true_normr);
 }
 

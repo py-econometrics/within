@@ -86,12 +86,17 @@ impl Operator for ZeroSecondRow {
     }
 }
 
+/// `b − A x`.
+pub(crate) fn residual<O: Operator + ?Sized>(op: &O, x: &[f64], b: &[f64]) -> Vec<f64> {
+    let mut ax = vec![0.0; op.nrows()];
+    op.apply(x, &mut ax).expect("apply succeeds");
+    b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect()
+}
+
 /// `‖Aᵀ (b - A x)‖₂` — normal-equation residual, the scale-invariant
 /// "did we actually solve the least-squares problem?" check.
 pub(crate) fn normal_equation_residual<O: Operator + ?Sized>(op: &O, x: &[f64], b: &[f64]) -> f64 {
-    let mut ax = vec![0.0; op.nrows()];
-    op.apply(x, &mut ax).expect("apply succeeds");
-    let resid: Vec<f64> = b.iter().zip(&ax).map(|(bi, ai)| bi - ai).collect();
+    let resid = residual(op, x, b);
     let mut atr = vec![0.0; op.ncols()];
     op.apply_adjoint(&resid, &mut atr)
         .expect("apply_adjoint succeeds");
