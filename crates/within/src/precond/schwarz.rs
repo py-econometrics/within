@@ -79,10 +79,31 @@ fn build_local_domains(
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     let (approx, scaling) = (config.factor_config(), config.scaling_policy()?);
     let on_failure = config.scaling.on_failure;
-    let per_pair: Vec<(Option<LocalDomain>, Vec<BuildWarning>)> = gramian
-        .pair_blocks()
-        .into_par_iter()
-        .map(|block| factor_pair(block, approx, scaling, on_failure))
+    let blocks = gramian.pair_blocks();
+    let mut built: Vec<Option<Result<PairDomain, BuildError>>> =
+        std::iter::repeat_with(|| None).take(blocks.len()).collect();
+    let mut queue: Vec<_> = built.iter_mut().zip(blocks).collect();
+    // The longest factor forms first, so it runs on the side while the others form.
+    queue.sort_by_key(|(_, block)| std::cmp::Reverse(block.n_factored()));
+    // One block forms at a time, on every thread, so no two blocks' `C`s are held at once; each
+    // formed block factors on the side while the next forms.
+    rayon::scope(|scope| {
+        for (slot, block) in queue {
+            match block.form(approx, scaling) {
+                Ok(formed) => scope.spawn(move |_| {
+                    *slot = Some(domain(block, formed.factor(), on_failure));
+                }),
+                Err(e) => {
+                    *slot = Some(Err(BuildError::LocalSolverBuild(e.to_string())));
+                    break;
+                }
+            }
+        }
+    });
+    // Blocks after a failure never form: the first error in pair order returns before them.
+    let per_pair: Vec<PairDomain> = built
+        .into_iter()
+        .flatten()
         .collect::<Result<_, BuildError>>()?;
     let mut domain_pairs = Vec::new();
     let mut warnings = Vec::new();
@@ -100,17 +121,14 @@ fn build_local_domains(
     Ok((domain_pairs, warnings))
 }
 
-/// The approximate inverse of `block`, one subdomain over its vertices.
-fn factor_pair(
+/// `block`'s subdomain over its vertices from its approximate inverse, and the warnings its
+/// unscalable components raise.
+fn domain(
     block: PairBlock<'_>,
-    approx: approx_chol::Config,
-    scaling: approx_chol::ScalingPolicy,
+    inverse: ApproxInverse,
     on_failure: ScalingFailure,
-) -> Result<(Option<LocalDomain>, Vec<BuildWarning>), BuildError> {
+) -> Result<PairDomain, BuildError> {
     let pair = block.pair;
-    let inverse = (block.factorize(approx, scaling))
-        .map_err(|e| BuildError::LocalSolverBuild(e.to_string()))?;
-
     let mut warnings = Vec::new();
     for clamp in inverse.components().filter_map(|c| c.clamp()) {
         if clamp.scaling == ScalingOutcome::Certified {
@@ -136,6 +154,9 @@ fn factor_pair(
     };
     Ok((Some(domain), warnings))
 }
+
+/// A pair's subdomain, `None` without a component to act on, and its warnings.
+type PairDomain = (Option<LocalDomain>, Vec<BuildWarning>);
 
 /// Two-sided Schwarz needs `Σ Rᵢᵀ D̃ᵢ² Rᵢ = I`, so a DOF in `c` subdomains gets `1/√c`.
 fn compute_partition_weights(domain_pairs: &mut [LocalDomain], n_dofs: usize) {

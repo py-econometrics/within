@@ -4,7 +4,7 @@
 use std::ops::Range;
 
 use approx_chol::input::{BipartiteFactorWidth2, FactorWidth1, Side};
-use approx_chol::{ApproxInverse, Config, ScalingPolicy};
+use approx_chol::{ApproxInverse, Complement, Config, FormedComplement, ScalingPolicy, Threads};
 
 use super::{ReducedDesign, SplitDesign, TermBlock};
 use crate::design::{Channel, ChannelPair};
@@ -28,16 +28,32 @@ pub(crate) struct PairBlock<'p> {
 }
 
 impl PairBlock<'_> {
-    /// The local operator's approximate inverse, formed from `G`'s block as [`BlockForm`] says.
-    pub(crate) fn factorize(
+    /// The vertices its factor's Cholesky eliminates once formed: a complement's kept side, a kept
+    /// pair's both.
+    pub(crate) fn n_factored(&self) -> usize {
+        match &self.form {
+            BlockForm::Kept { rows, cols } => rows.len() + cols.len(),
+            BlockForm::Complement { kept, .. } => kept.len(),
+        }
+    }
+
+    /// `G`'s block formed as [`BlockForm`] says, on every thread: a complement's `C` and fill
+    /// freed and only its factor left to [`FormedPair::factor`], so the next block may form
+    /// while it factors without two blocks' `C`s held at once. A kept pair factors whole.
+    pub(crate) fn form(
         &self,
         approx: Config,
         scaling: ScalingPolicy,
-    ) -> Result<ApproxInverse, approx_chol::BuildError> {
+    ) -> Result<FormedPair, approx_chol::BuildError> {
         match self.form {
-            BlockForm::Kept { .. } => approx_chol::factorize_with(self.factor, approx, scaling),
+            BlockForm::Kept { .. } => {
+                approx_chol::factorize_with(self.factor, approx, scaling).map(FormedPair::Factored)
+            }
             BlockForm::Complement { side, .. } => {
-                approx_chol::factorize_complement(self.factor, side, approx, scaling)
+                let complement = Complement::reduce_onto(self.factor, side, scaling, Threads::All)?;
+                Ok(FormedPair::Complement(
+                    complement.form(approx, Threads::All),
+                ))
             }
         }
     }
@@ -59,6 +75,22 @@ enum BlockForm {
     /// One channel is `e`'s: `G`'s block complemented onto the kept channel, which is on `side`
     /// of the factor; its vertices are that channel's slots.
     Complement { kept: Range<usize>, side: Side },
+}
+
+/// A [`PairBlock`] formed: a kept pair's whole factor, or a complement still to factor.
+pub(crate) enum FormedPair {
+    Factored(ApproxInverse),
+    Complement(FormedComplement),
+}
+
+impl FormedPair {
+    /// The block's approximate inverse, bit for bit the one the whole build in one call makes.
+    pub(crate) fn factor(self) -> ApproxInverse {
+        match self {
+            Self::Factored(inverse) => inverse,
+            Self::Complement(formed) => formed.factor(Threads::All),
+        }
+    }
 }
 
 impl BlockForm {

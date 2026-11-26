@@ -152,7 +152,7 @@ fn slope_only_term_recovers_per_level_projection() {
     assert_eq!(r.x.len(), 3);
 
     // Reference: per-level projection onto z alone, b = Σzy / Σz².
-    for l in 0..3 {
+    for (l, &x) in r.x.iter().enumerate() {
         let (szy, szz) = levels
             .iter()
             .zip(z.iter().zip(y.iter()))
@@ -160,7 +160,7 @@ fn slope_only_term_recovers_per_level_projection() {
             .fold((0.0, 0.0), |(szy, szz), (_, (&zi, &yi))| {
                 (szy + zi * yi, szz + zi * zi)
             });
-        assert_close(r.x[l], szy / szz, &format!("slope of level {l}"));
+        assert_close(x, szy / szz, &format!("slope of level {l}"));
     }
     for i in 0..levels.len() {
         let l = levels[i] as usize;

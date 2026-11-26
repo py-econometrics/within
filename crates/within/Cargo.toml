@@ -12,7 +12,7 @@ categories.workspace = true
 
 [dependencies]
 schwarz-precond = { workspace = true, features = ["serde"] }
-approx-chol = { version = "0.8.2", features = ["serde"] }
+approx-chol = { git = "https://github.com/aai-institute/approx-chol", rev = "84eb02d3a345db6cf9edeb8a786b4362e39fde5d", features = ["serde"] }
 inflight.workspace = true
 serde = { workspace = true, features = ["rc"] }
 postcard.workspace = true
