@@ -24,6 +24,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - `CoefficientLayout` equality also compares which of a term's columns is the intercept.
 - A solver releases a design's raw slopes once it has whitened them, unless the caller still shares the design: 77 MB less peak memory at 5M rows with two slopes.
 - Slope whitening's row passes run in parallel within a term, bit-identical at any thread count: per-level sums, the design adjoint included, combine in one fixed tree set by the data, with row-split leaves of `4·L` rows whatever the state size (#515).
+- LSMR reports convergence only when the measured `‖Aᵀr‖ / (L‖r‖)` or `‖r‖ / ‖b‖` meets `tol`, with `L ≤ ‖A‖₂` from the new `Operator::norm_floor` (#455, #572). Some near-aliased solves at `tol = 1e-12` now end in `FalseConvergence` (#544).
 - **BREAKING:** `schwarz_precond::lsmr` is removed; `mlsmr` with `IdentityOp` runs unpreconditioned LSMR.
 - **BREAKING:** `schwarz_precond::mlsmr` takes its start as a `start: Option<&[f64]>` argument after `maxiter`, in place of `MlsmrOptions::warm_start`; `maxiter` caps this run alone.
 - **BREAKING:** `LsmrResult::converged` is a method derived from `stop_reason`, no longer a field.
