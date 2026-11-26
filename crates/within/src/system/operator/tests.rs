@@ -74,15 +74,18 @@ fn assert_matches_dense(design: &crate::system::ReducedDesign<'_>) {
             "diag(S) {energy} vs {norm}"
         );
     }
-    // An absorbed column's dense norm is rounding, which the floor rightly leaves out.
+    // An absorbed column's dense norm is rounding, which the floor rightly leaves out; a kept one
+    // gives up at most its `rows·ε·own` slack.
     let largest = (norms.iter().zip(design.diag_s.values()))
         .filter(|&(_, &energy)| energy > 0.0)
-        .fold(0.0f64, |m, (&norm, _)| m.max(norm))
-        .sqrt();
+        .fold(0.0f64, |m, (&norm, _)| m.max(norm));
+    let slack = design.n_obs() as f64 * f64::EPSILON * own.iter().fold(0.0f64, |m, &o| m.max(o));
     let floor = SystemMatrix::new(design).norm_floor().unwrap();
     assert!(
-        (floor - largest).abs() <= 1e-10 * largest,
-        "norm floor {floor} vs largest column norm {largest}"
+        floor * floor <= largest * (1.0 + 1e-10)
+            && floor * floor >= largest - slack - 1e-10 * largest,
+        "norm floor² {} vs largest column energy {largest}, slack {slack}",
+        floor * floor
     );
     let (n, n_kept) = (design.n_obs(), design.unknowns().len());
     let close = |got: &[f64], expect: &[f64]| {

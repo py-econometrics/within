@@ -318,10 +318,10 @@ impl<T: KeptTerms, R: TermRow, W: RowScale> SplitRows<'_, T, R, W> {
     pub(super) fn column_energies(
         &self,
         out: &mut [f64],
-        keep: &(impl Fn(usize, f64, f64) -> bool + Sync),
+        slack: &(impl Fn(usize, f64) -> f64 + Sync),
     ) {
-        let n = out.len();
-        let mut buffer = MemBuffer::new(self.segments.scratch(n, 3 * n));
+        let n = out.len() / 2;
+        let mut buffer = MemBuffer::new(self.segments.scratch(2 * n, 3 * n));
         // Per level, `own[j] = ‖a_{j,l}‖²` and `absorbed[j]` gather over its rows; per column `c`,
         // `a_{c,l}ᵀ a_j` gathers in `cross`. Each pass after the first reads each touched `j` and
         // clears what it read.
@@ -354,9 +354,10 @@ impl<T: KeptTerms, R: TermRow, W: RowScale> SplitRows<'_, T, R, W> {
             }
             for i in rows.clone() {
                 self.slots(i, |j, _| {
-                    let energy = own[j] - absorbed[j];
-                    if keep(rows.len(), own[j], energy) {
+                    let (energy, slack) = (own[j] - absorbed[j], slack(rows.len(), own[j]));
+                    if energy > slack {
                         acc[j] += energy;
+                        acc[n + j] += energy - slack;
                     }
                     (own[j], absorbed[j]) = (0.0, 0.0);
                 });

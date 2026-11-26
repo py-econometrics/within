@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use crate::{MemBuffer, MemStack, Operator, SolveError};
 use bidiag::{axpby, normalize, par_norm, BidiagStep, Bidiagonalization, StagedStart};
 use magnitude::Magnitude;
-use recurrence::{ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState};
+use recurrence::{Audit, ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState};
 
 /// Euclidean norm of a vector.
 ///
@@ -428,7 +428,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
     mut step1: BidiagStep,
     b: &[f64],
     start: SolveStart<'_>,
-    criteria: ConvergenceCriteria,
+    mut criteria: ConvergenceCriteria,
     maxiter: usize,
     escalation: Option<&dyn EscalationPolicy>,
 ) -> Result<LsmrResult, SolveError> {
@@ -446,9 +446,10 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 None => (true, 0.0),
                 Some((per_unit_residual, plain)) => {
                     let normar = Magnitude::product(step1.beta, per_unit_residual);
-                    let converged = criteria
-                        .certify(step1.beta, || Ok((normar, bidiag.norm_floor()?)))?
-                        .is_some();
+                    let converged = matches!(
+                        criteria.certify(step1.beta, || Ok((normar, bidiag.norm_floor()?)))?,
+                        Audit::Certified(_)
+                    );
                     let relative = if plain.is_normal() {
                         (normar / plain).to_f64()
                     } else {
@@ -539,22 +540,27 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 true_residual: None,
             });
         }
-        let certified = criteria.certify(residual_norm, || {
+        let audit = criteria.certify(residual_norm, || {
             Ok((bidiag.plain_gradient(residual_norm)?, bidiag.norm_floor()?))
         })?;
-        let (stop_reason, normal_eq_residual, true_residual) = match certified {
-            Some(stop_reason) => (
+        let (stop_reason, normal_eq_residual, true_residual) = match audit {
+            Audit::Certified(stop_reason) => (
                 stop_reason,
                 normal_eq_residual,
                 Some(bidiag.into_residual()),
             ),
-            None if restarts < MAX_RESTARTS && iterations < maxiter => {
+            Audit::Refuted { backward_error }
+                if restarts < MAX_RESTARTS && iterations < maxiter =>
+            {
                 restarts += 1;
                 step1 = bidiag.restart(residual_norm)?;
                 base = Some(Cow::Owned(x));
+                // The seed measures the metric backward error `α₁ / ‖Â‖` of the same `r`: a
+                // preconditioner's steady gap to the plain one, which recurrence drift cannot fake.
+                criteria = criteria.tightened(backward_error * convergence.a_norm() / step1.alpha);
                 continue;
             }
-            None => {
+            Audit::Refuted { .. } => {
                 // The estimate is the refuted claim; a seed from the staged residual measures `x`.
                 let step = bidiag.restart(residual_norm)?;
                 let measured = reference.relative(Magnitude::product(step.alpha, step.beta));

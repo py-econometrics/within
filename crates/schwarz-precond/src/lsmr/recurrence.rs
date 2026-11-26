@@ -288,11 +288,21 @@ impl SolutionState {
     }
 }
 
-/// Immutable stopping criteria for one LSMR run.
+/// What an audit's measurements decide.
+pub(super) enum Audit {
+    /// The measured `r`, or `r` and `Aᵀr`, meet the tolerance.
+    Certified(LsmrStopReason),
+    /// Neither leg holds; `backward_error` is the measured `‖Aᵀr‖ / (L‖r‖)`.
+    Refuted { backward_error: f64 },
+}
+
+/// Stopping criteria for one LSMR run: the certificate's tolerances, and the backward-error
+/// trigger that asks for an audit.
 #[derive(Clone, Copy)]
 pub(super) struct ConvergenceCriteria {
     abs_tol: f64,
     rel_tol: f64,
+    trigger_rel: f64,
 }
 
 impl ConvergenceCriteria {
@@ -300,6 +310,17 @@ impl ConvergenceCriteria {
         Self {
             abs_tol: tol * reference_norm,
             rel_tol: tol,
+            trigger_rel: tol,
+        }
+    }
+
+    /// The trigger for the pass after a refuted audit: the tolerance over the measured ratio of
+    /// the plain backward error to the metric one, which the metric estimate must undercut for
+    /// the plain one to meet it. Never looser than the tolerance.
+    pub(super) fn tightened(self, gap: f64) -> Self {
+        Self {
+            trigger_rel: self.rel_tol / gap.clamp(1.0, f64::MAX),
+            ..self
         }
     }
 
@@ -317,13 +338,17 @@ impl ConvergenceCriteria {
         &self,
         residual: f64,
         gradient: impl FnOnce() -> Result<(Magnitude, f64), SolveError>,
-    ) -> Result<Option<LsmrStopReason>, SolveError> {
+    ) -> Result<Audit, SolveError> {
         if residual <= self.abs_tol {
-            return Ok(Some(LsmrStopReason::ResidualTolerance));
+            return Ok(Audit::Certified(LsmrStopReason::ResidualTolerance));
         }
         let (normar, floor) = gradient()?;
-        Ok((backward_error(normar, floor, residual) <= self.rel_tol)
-            .then_some(LsmrStopReason::NormalEquationTolerance))
+        let backward_error = backward_error(normar, floor, residual);
+        Ok(if backward_error <= self.rel_tol {
+            Audit::Certified(LsmrStopReason::NormalEquationTolerance)
+        } else {
+            Audit::Refuted { backward_error }
+        })
     }
 }
 
@@ -344,14 +369,19 @@ impl ConvergenceState {
         self.alpha = s.alpha;
     }
 
-    /// Whether the stream's own `‖r_k‖` or `‖Aᵀr_k‖` estimate meets the tolerance; only measuring
-    /// `x` can certify a stop.
+    /// Whether the stream's own `‖r_k‖` or backward error meets its trigger; only measuring `x` can
+    /// certify a stop.
     pub(super) fn triggers_audit(&self, r: &LsmrRecurrenceState) -> bool {
         let unit_residual = r.unit_residual();
-        // The stream's own backward error; `β₁` cancels, so the `u₁` form stays in range.
+        // `β₁` cancels from the backward error, so the `u₁` form stays in range.
         let normar = Magnitude::from(r.normal_eq_qr.normar());
         r.rhs_norm * unit_residual <= self.criteria.abs_tol
-            || backward_error(normar, self.a_norm, unit_residual) <= self.criteria.rel_tol
+            || backward_error(normar, self.a_norm, unit_residual) <= self.criteria.trigger_rel
+    }
+
+    /// The floor under `‖Â‖₂` this pass has seen.
+    pub(super) fn a_norm(&self) -> f64 {
+        self.a_norm
     }
 }
 

@@ -158,8 +158,12 @@ impl<'p> Gramian<'p> {
     }
 }
 
-/// `diag(S) = diag(A_rᵀA_r)` per unknown; 0 on a column the elimination absorbs.
-pub(super) struct SchurDiagonal(Vec<f64>);
+/// `diag(S) = diag(A_rᵀA_r)` per unknown, 0 on a column the elimination absorbs, and a floor under
+/// `‖A_r‖₂` that survives the cancellation in it.
+pub(super) struct SchurDiagonal {
+    values: Vec<f64>,
+    floor: f64,
+}
 
 impl SchurDiagonal {
     /// `diag(S)_j = Σ_l (‖a_{j,l}‖² − Σ_c (a_{c,l}ᵀ a_j)² / g_{c,l})` over `e`'s levels `l`: each
@@ -167,17 +171,30 @@ impl SchurDiagonal {
     /// `rows·ε` of its own norm, so a light level that identifies `a_j` is not lost in a heavy
     /// one's cancellation.
     pub(super) fn of(design: &SplitDesign<'_>) -> Self {
-        let mut values = vec![0.0; design.unknowns().len()];
+        let n = design.unknowns().len();
+        let mut energies = vec![0.0; 2 * n];
         // Measured, absorbed slopes round to at most 0.04·rows·ε here, to 10⁶ rows, weighted or
         // not; the near-combination slope the solver must keep lies 11ε above its 8-row span. A
         // worst-case bound, `(2√w + 3 + 6v)·rows·ε/2` with CholeskyQR2's orthogonality, would
         // mask it.
-        let keep = |rows: usize, own: f64, energy: f64| energy > rows as f64 * f64::EPSILON * own;
-        design.dynamic().column_energies(&mut values, &keep);
-        Self(values)
+        let slack = |rows: usize, own: f64| rows as f64 * f64::EPSILON * own;
+        design.dynamic().column_energies(&mut energies, &slack);
+        let floor = energies[n..].iter().fold(0.0f64, |m, &d| m.max(d)).sqrt();
+        energies.truncate(n);
+        energies.shrink_to_fit();
+        Self {
+            values: energies,
+            floor,
+        }
     }
 
     pub(super) fn values(&self) -> &[f64] {
-        &self.0
+        &self.values
+    }
+
+    /// `√max_j` of column `j`'s energy less its slack: `≤ ‖A_r e_j‖ ≤ ‖A_r‖₂` while the rounding
+    /// stays inside the slack, where a near-absorbed column's own `diag(S)` may not.
+    pub(super) fn floor(&self) -> f64 {
+        self.floor
     }
 }

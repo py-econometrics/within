@@ -92,16 +92,10 @@ impl Operator for SystemMatrix<'_> {
         self.design.split.dynamic().scratch(self.ncols())
     }
 
-    /// `√max diag(S)`, the largest column norm: within 1.07× of `‖A_r‖₂` on the bench designs, for
-    /// one pass over `diag(S)` against an apply's pass over the rows.
+    /// The largest column norm less its rounding, kept since `diag(S)` was built: within 1.07× of
+    /// `‖A_r‖₂` on the bench designs.
     fn norm_floor(&self) -> Result<f64, schwarz_precond::SolveError> {
-        let max = self
-            .design
-            .diag_s
-            .values()
-            .iter()
-            .fold(0.0f64, |m, &d| m.max(d));
-        Ok(max.sqrt())
+        Ok(self.design.diag_s.floor())
     }
 
     fn apply_with(

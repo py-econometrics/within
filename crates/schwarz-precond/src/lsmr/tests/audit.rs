@@ -3,7 +3,7 @@ use rstest::rstest;
 
 use super::super::bidiag::{BidiagStep, Bidiagonalization};
 use super::super::magnitude::Magnitude;
-use super::super::recurrence::ConvergenceCriteria;
+use super::super::recurrence::{Audit, ConvergenceCriteria};
 use super::super::{
     lsmr_from_bidiag, mlsmr, EscalationHandler, EscalationPolicy, LsmrResult, LsmrStopReason,
     MlsmrOptions, NormalEqReference, SolveStart,
@@ -217,10 +217,10 @@ fn each_certificate_leg_is_explicit(
     #[case] expected: bool,
 ) {
     let criteria = ConvergenceCriteria::new(1.0, 1e-10);
-    let certified = criteria
+    let audit = criteria
         .certify(residual, || Ok((Magnitude::from(normar), floor)))
         .unwrap();
-    assert_eq!(certified.is_some(), expected);
+    assert_eq!(matches!(audit, Audit::Certified(_)), expected);
 }
 
 /// `M⁻¹ = diag(1, 1e-20)` cannot certify the solution direction it hides.
