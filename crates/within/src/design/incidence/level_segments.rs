@@ -408,18 +408,20 @@ impl LevelSegments {
         );
     }
 
-    /// What any pass takes from a stack for a sum of length `n` and `len` values of scratch.
+    /// What a fitted pass or [`map`](Self::map) takes from a stack for a sum of length `n` and
+    /// `len` values of scratch per run.
     pub(crate) fn scratch(&self, n: usize, len: usize) -> StackReq {
-        let per_leaf = self.per_leaf(n);
-        let sum = |items: usize, scratch: usize| {
-            let rest = (items.div_ceil(per_leaf) - 1) * n;
-            StackReq::new::<f64>(rest).and(StackReq::new::<f64>(scratch * len))
-        };
-        let n_leaves = self.n_tasks().div_ceil(per_leaf);
-        // A fitted pass's scratch is per run; `map`'s per task, at most one per run.
-        let map = StackReq::new::<f64>(self.n_runs() * len);
-        map.or(sum(self.n_tasks(), n_leaves))
-            .or(sum(self.n_runs(), self.n_runs()))
+        // A fitted sum's leaf accumulators, then any pass's scratch: a fitted pass's per run,
+        // `map`'s per task, at most one per run.
+        let rest = (self.n_runs().div_ceil(self.per_leaf(n)) - 1) * n;
+        StackReq::new::<f64>(rest).and(StackReq::new::<f64>(self.n_runs() * len))
+    }
+
+    /// What [`sum`](Self::sum) takes from a stack for a sum of length `n` and `len` values of
+    /// scratch per leaf.
+    pub(crate) fn sum_scratch(&self, n: usize, len: usize) -> StackReq {
+        let n_leaves = self.n_tasks().div_ceil(self.per_leaf(n));
+        StackReq::new::<f64>((n_leaves - 1) * n).and(StackReq::new::<f64>(n_leaves * len))
     }
 }
 

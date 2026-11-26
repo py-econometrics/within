@@ -321,7 +321,7 @@ impl<T: KeptTerms, R: TermRow, W: RowScale> SplitRows<'_, T, R, W> {
         slack: &(impl Fn(usize, f64) -> f64 + Sync),
     ) {
         let n = out.len() / 2;
-        let mut buffer = MemBuffer::new(self.segments.scratch(2 * n, 3 * n));
+        let mut buffer = MemBuffer::new(self.segments.sum_scratch(2 * n, 3 * n));
         // Per level, `own[j] = ‖a_{j,l}‖²` and `absorbed[j]` gather over its rows; per column `c`,
         // `a_{c,l}ᵀ a_j` gathers in `cross`. Each pass after the first reads each touched `j` and
         // clears what it read.
