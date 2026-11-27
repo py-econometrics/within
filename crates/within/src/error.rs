@@ -121,6 +121,12 @@ pub enum BuildWarning {
         /// Largest relative dominance violation, clamped away.
         violation: f64,
     },
+    /// PROTOTYPE(#607): the coarse build found no coarse space worth building, or its factor
+    /// would outgrow the observations; the map stays one-level.
+    CoarseDeclined {
+        /// Why.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for BuildWarning {
@@ -131,6 +137,12 @@ impl std::fmt::Display for BuildWarning {
                 "signed component between {pair}: dominance scaling uncertified (max relative \
                  violation {violation:.2e}); deficits clamped, preconditioner quality may degrade"
             ),
+            Self::CoarseDeclined { reason } => {
+                write!(
+                    f,
+                    "coarse correction declined ({reason}); staying one-level"
+                )
+            }
         }
     }
 }

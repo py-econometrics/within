@@ -13,6 +13,7 @@ use schwarz::FeSchwarz;
 
 mod ladder;
 mod schwarz;
+mod two_level;
 
 pub(crate) use ladder::{Current, Ladder};
 
@@ -83,6 +84,8 @@ enum Map {
     // Append only: postcard encodes by declaration order and the fixtures depend on it.
     Diagonal(DiagonalPreconditioner),
     Schwarz(FeSchwarz),
+    /// PROTOTYPE(#607): Schwarz with the rigid coarse correction; never persisted.
+    TwoLevel(two_level::TwoLevelMap),
 }
 
 impl Rung<'_> {
@@ -90,24 +93,54 @@ impl Rung<'_> {
     fn offers(&self, gramian: Gramian<'_>) -> bool {
         match self {
             Self::Diagonal => true,
-            Self::Schwarz(_) => gramian.has_pair_blocks(),
+            Self::Schwarz(_) | Self::Coarse(_) => gramian.has_pair_blocks(),
         }
     }
 
     fn builds(&self, map: &Map) -> bool {
         matches!(
             (self, map),
-            (Self::Diagonal, Map::Diagonal(_)) | (Self::Schwarz(_), Map::Schwarz(_))
+            (Self::Diagonal, Map::Diagonal(_))
+                | (Self::Schwarz(_), Map::Schwarz(_))
+                | (Self::Coarse(_), Map::TwoLevel(_) | Map::Schwarz(_))
         )
     }
 
     /// Build the map; `None` when it has nothing to act on (Schwarz with no pair to act on).
-    fn build(&self, gramian: Gramian<'_>) -> Result<(Option<Map>, Vec<BuildWarning>), BuildError> {
+    ///
+    /// PROTOTYPE(#607): `below` is the map of the highest built rung below this one; the coarse
+    /// rung reuses its Schwarz, or builds its own when there is none (the fixed config). A
+    /// declined coarse space leaves the climb on the rung below (`None`) and the fixed config on
+    /// its one-level Schwarz.
+    fn build(
+        &self,
+        gramian: Gramian<'_>,
+        below: Option<&Map>,
+    ) -> Result<(Option<Map>, Vec<BuildWarning>), BuildError> {
         Ok(match self {
             Self::Diagonal => (Some(Map::Diagonal(diagonal_map(gramian)?)), Vec::new()),
             Self::Schwarz(schwarz) => {
                 let (schwarz, warnings) = schwarz::build(gramian, &schwarz.local_solver)?;
                 (schwarz.map(Map::Schwarz), warnings)
+            }
+            Self::Coarse(schwarz) => {
+                let (one_level, mut warnings, reused) = match below {
+                    Some(Map::Schwarz(one_level)) => (Some(one_level.clone()), Vec::new(), true),
+                    _ => {
+                        let (one_level, warnings) = schwarz::build(gramian, &schwarz.local_solver)?;
+                        (one_level, warnings, false)
+                    }
+                };
+                let Some(one_level) = one_level else {
+                    return Ok((None, warnings));
+                };
+                match two_level::build(gramian, one_level.clone()) {
+                    Ok(map) => (Some(Map::TwoLevel(map)), warnings),
+                    Err(declined) => {
+                        warnings.push(declined);
+                        ((!reused).then_some(Map::Schwarz(one_level)), warnings)
+                    }
+                }
             }
         })
     }
@@ -118,6 +151,7 @@ impl Map {
         match self {
             Self::Diagonal(p) => p,
             Self::Schwarz(p) => p.operator(),
+            Self::TwoLevel(p) => p,
         }
     }
 }
@@ -162,6 +196,7 @@ impl Preconditioner {
         match self.map {
             Map::Diagonal(_) => "Diagonal",
             Map::Schwarz(_) => "Additive",
+            Map::TwoLevel(_) => "TwoLevel",
         }
     }
 

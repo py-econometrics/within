@@ -189,17 +189,39 @@ impl Default for PreconditionerConfig {
 
 impl PreconditionerConfig {
     /// The rungs a solve climbs, in order, each with the stall that hands a solve to the next.
+    ///
+    /// PROTOTYPE(#607): `PROBE_COARSE=climb` adds a coarse rung above Adaptive's Schwarz,
+    /// `PROBE_COARSE=fixed` makes the Schwarz config build the coarse correction at once;
+    /// `PROBE_STALL1` / `PROBE_STALL2` override the first and second climb's stall rule.
     pub(crate) fn rungs(&self) -> impl Iterator<Item = (Rung<'_>, Option<&Staleness>)> {
-        let (first, second) = match self {
-            Self::Off => (None, None),
-            Self::Diagonal => (Some((Rung::Diagonal, None)), None),
-            Self::Schwarz(schwarz) => (Some((Rung::Schwarz(schwarz), None)), None),
-            Self::Adaptive { stall, schwarz } => (
-                Some((Rung::Diagonal, Some(stall))),
-                Some((Rung::Schwarz(schwarz), None)),
-            ),
+        let probe = probe::knobs();
+        let rungs: [Option<(Rung<'_>, Option<&Staleness>)>; 3] = match self {
+            Self::Off => [None, None, None],
+            Self::Diagonal => [Some((Rung::Diagonal, None)), None, None],
+            Self::Schwarz(schwarz) => match probe.coarse {
+                probe::Coarse::Fixed => [Some((Rung::Coarse(schwarz), None)), None, None],
+                _ => [Some((Rung::Schwarz(schwarz), None)), None, None],
+            },
+            Self::Adaptive { stall, schwarz } => {
+                let first = probe.stall1.as_ref().unwrap_or(stall);
+                match probe.coarse {
+                    probe::Coarse::Climb => [
+                        Some((Rung::Diagonal, Some(first))),
+                        Some((
+                            Rung::Schwarz(schwarz),
+                            Some(probe.stall2.as_ref().unwrap_or(first)),
+                        )),
+                        Some((Rung::Coarse(schwarz), None)),
+                    ],
+                    _ => [
+                        Some((Rung::Diagonal, Some(first))),
+                        Some((Rung::Schwarz(schwarz), None)),
+                        None,
+                    ],
+                }
+            }
         };
-        first.into_iter().chain(second)
+        rungs.into_iter().flatten()
     }
 
     pub(crate) fn validate(&self) -> Result<(), BuildError> {
@@ -212,6 +234,9 @@ impl PreconditionerConfig {
 pub(crate) enum Rung<'c> {
     Diagonal,
     Schwarz(&'c Schwarz),
+    /// PROTOTYPE(#607): Schwarz plus the rigid coarse correction; builds Schwarz itself unless
+    /// the rung below holds it.
+    Coarse(&'c Schwarz),
 }
 
 impl Rung<'_> {
@@ -219,7 +244,7 @@ impl Rung<'_> {
     fn validate(&self) -> Result<(), BuildError> {
         match self {
             Self::Diagonal => Ok(()),
-            Self::Schwarz(schwarz) => schwarz.local_solver.validate(),
+            Self::Schwarz(schwarz) | Self::Coarse(schwarz) => schwarz.local_solver.validate(),
         }
     }
 }
@@ -242,5 +267,61 @@ impl Default for LsmrOptions {
             maxiter: 1000,
             local_size: None,
         }
+    }
+}
+
+/// PROTOTYPE(#607): the probe's knobs, read once from the environment.
+pub(crate) mod probe {
+    use std::sync::OnceLock;
+
+    use super::Staleness;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Coarse {
+        Off,
+        Climb,
+        Fixed,
+    }
+
+    #[derive(Debug)]
+    pub(crate) struct Knobs {
+        pub(crate) coarse: Coarse,
+        pub(crate) stall1: Option<Staleness>,
+        pub(crate) stall2: Option<Staleness>,
+    }
+
+    fn stall(name: &str) -> Option<Staleness> {
+        let raw = std::env::var(name).ok()?;
+        let (w, t) = raw
+            .split_once(',')
+            .unwrap_or_else(|| panic!("{name}={raw}: want w,t"));
+        let window = w
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("{name}={raw}: bad window"));
+        let threshold = t
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("{name}={raw}: bad threshold"));
+        Some(Staleness::try_new(window, threshold).unwrap_or_else(|e| panic!("{name}={raw}: {e}")))
+    }
+
+    pub(crate) fn knobs() -> &'static Knobs {
+        static KNOBS: OnceLock<Knobs> = OnceLock::new();
+        KNOBS.get_or_init(|| Knobs {
+            coarse: match std::env::var("PROBE_COARSE").as_deref() {
+                Err(_) | Ok("") | Ok("off") => Coarse::Off,
+                Ok("climb") => Coarse::Climb,
+                Ok("fixed") => Coarse::Fixed,
+                Ok(other) => panic!("PROBE_COARSE={other}: want climb or fixed"),
+            },
+            stall1: stall("PROBE_STALL1"),
+            stall2: stall("PROBE_STALL2"),
+        })
+    }
+
+    /// Whether the probe asked for the coarse rung, so its build reports to stderr.
+    pub(crate) fn verbose() -> bool {
+        knobs().coarse != Coarse::Off
     }
 }

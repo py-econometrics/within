@@ -124,7 +124,15 @@ impl Ladder {
 
     fn build(&self, gramian: Gramian<'_>, at: usize, rung: Rung<'_>) -> Built {
         let started = Instant::now();
-        let (map, own) = rung.build(gramian)?;
+        // PROTOTYPE(#607): the coarse rung composes with the Schwarz map built below it.
+        let below = self.built[..at]
+            .iter()
+            .rev()
+            .find_map(|cell| match cell.get() {
+                Some(Ok(RungBuild { map: Some(map), .. })) => Some(&map.map),
+                _ => None,
+            });
+        let (map, own) = rung.build(gramian, below)?;
         // Each build carries the warnings below it, so `warnings()` only ever grows.
         let mut warnings = self.warnings().to_vec();
         warnings.extend(own);

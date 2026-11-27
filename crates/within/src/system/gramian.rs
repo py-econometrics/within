@@ -13,7 +13,7 @@ use crate::design::{Channel, ChannelPair};
 /// each formed from a pair block of `G = D̃ᵀ W D̃`.
 #[derive(Clone, Copy)]
 pub(crate) struct Gramian<'p> {
-    design: &'p ReducedDesign<'p>,
+    pub(super) design: &'p ReducedDesign<'p>,
 }
 
 /// A local operator on the channel pair `pair` of two terms, from `G`'s pair factor `V`. Two kept

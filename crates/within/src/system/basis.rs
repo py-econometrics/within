@@ -27,6 +27,9 @@ pub(super) struct OrthogonalSlopes {
     shift: Vec<f64>,
     /// Per level × slope, whether the data identify the caller's slope `j`.
     kept: Vec<bool>,
+    /// PROTOTYPE(#607): per level × slope, the caller slope's weighted level mean (0 without an
+    /// intercept), which the coarse gauges need where `factor` drops the slope.
+    means: Vec<f64>,
 }
 
 impl Slopes<'_> {
@@ -54,11 +57,13 @@ impl Slopes<'_> {
                 factor: Vec::new(),
                 shift: Vec::new(),
                 kept: Vec::new(),
+                means: Vec::new(),
             };
         }
         let moments = LevelMoments::build(term, &views(&columns), weights);
         let (first, kept) = Sweeps::orthonormalize(&moments, n_levels, v);
         drop(moments);
+        let means = first.center.iter().map(|m| m.value()).collect();
         first.apply(term.levels(), &mut columns);
 
         // The rank tolerance keeps the first pass well-conditioned, so this one drops nothing.
@@ -73,6 +78,7 @@ impl Slopes<'_> {
             factor,
             shift,
             kept,
+            means,
         }
     }
 }
@@ -80,6 +86,16 @@ impl Slopes<'_> {
 impl OrthogonalSlopes {
     pub(super) fn columns(&self) -> &[Vec<f64>] {
         &self.columns
+    }
+
+    /// PROTOTYPE(#607): level `level`'s `factor` (row-major `V×V`), `shift` and caller-slope means.
+    pub(super) fn level_map(&self, level: usize) -> (&[f64], &[f64], &[f64]) {
+        let v = self.columns.len();
+        (
+            &self.factor[level * v * v..][..v * v],
+            &self.shift[level * v..][..v],
+            &self.means[level * v..][..v],
+        )
     }
 
     /// The caller's slopes the data cannot identify in `level`.

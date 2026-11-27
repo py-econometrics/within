@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 schwarz-precond = { workspace = true, features = ["serde"] }
+faer.workspace = true
 approx-chol = { version = "0.8.2", features = ["serde"] }
 inflight.workspace = true
 serde = { workspace = true, features = ["rc"] }

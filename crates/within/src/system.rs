@@ -5,6 +5,7 @@
 
 mod basis;
 mod blocks;
+mod coarse;
 mod gramian;
 mod operator;
 mod response;
@@ -13,6 +14,7 @@ mod term;
 mod tests;
 mod weights;
 
+pub(crate) use coarse::CoarseSolve;
 use gramian::SchurDiagonal;
 pub(crate) use gramian::{Gramian, PairBlock};
 use operator::Absorbed;

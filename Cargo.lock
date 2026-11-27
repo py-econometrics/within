@@ -2252,6 +2252,7 @@ version = "0.5.0"
 dependencies = [
  "approx-chol",
  "criterion",
+ "faer",
  "inflight",
  "ndarray",
  "once_cell",
