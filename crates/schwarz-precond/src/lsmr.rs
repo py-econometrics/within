@@ -535,6 +535,13 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                         // the preconditioner's gap) goes to the audit and its restart, as before.
                         let ratio = metric / plain;
                         if ratio.is_finite() && ratio > 0.0 && !(triggered && ratio < 1.0) {
+                            // The last measurement without a certificate hands the pass back to the
+                            // uncalibrated trigger: at worst main's path plus the measurements.
+                            let ratio = if measurements == MAX_MEASUREMENTS {
+                                1.0
+                            } else {
+                                ratio
+                            };
                             criteria = criteria.recalibrated(ratio);
                             convergence.set_criteria(criteria);
                             prev_rot = curr_rot;
