@@ -809,8 +809,7 @@ dependencies = [
 [[package]]
 name = "inflight"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93014e449666f1a8445d605e586bd7d074b8fca57e3b1c9a68c8c5ec6337b06b"
+source = "git+https://github.com/aai-institute/inflight?rev=a8b7d3f75619#a8b7d3f7561950540415169c616b0cf48a532b35"
 dependencies = [
  "dyn-stack",
  "rayon",

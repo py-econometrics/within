@@ -41,5 +41,6 @@ harness = false
 name = "wallclock_1m3fe"
 harness = false
 
-[lints]
-workspace = true
+# probe: the counting allocator needs unsafe denied, not forbidden
+[lints.rust]
+unsafe_code = "deny"

@@ -1,5 +1,12 @@
 use std::ops::Range;
 
+use inflight::parallel::{Blocks, Pieces, Threads};
+
+/// Keys per chunk of a parallel grouping, at least.
+const GROUP_GRAIN: usize = 1 << 16;
+/// Keys per range of a grouping's second pass: its counts stay in cache.
+const RANGE_BITS: u32 = 14;
+
 /// Observation indices, 4 bytes each while every row fits `u32`.
 #[derive(Clone, Debug)]
 pub(crate) enum RowIndex {
@@ -10,11 +17,11 @@ pub(crate) enum RowIndex {
 impl RowIndex {
     /// Rows grouped by key, ascending within each, and where each key's rows start.
     pub(crate) fn argsort(key: &[u32], n_keys: usize) -> (Vec<usize>, Self) {
-        let offsets = offsets(n_keys, key.iter().map(|&k| k as usize));
+        let mut offsets = vec![0; n_keys + 1];
         let rows = if u32::try_from(key.len().saturating_sub(1)).is_ok() {
-            Self::Narrow(stable_argsort(key, &offsets, |i| i as u32))
+            Self::Narrow(grouped(key, &mut offsets, |i| i as u32))
         } else {
-            Self::Wide(stable_argsort(key, &offsets, |i| i))
+            Self::Wide(grouped(key, &mut offsets, |i| i))
         };
         (offsets, rows)
     }
@@ -28,7 +35,7 @@ impl RowIndex {
     }
 
     /// `out[k] = col[self[k]]`.
-    pub(crate) fn gather<T: Copy>(&self, col: &[T]) -> Vec<T> {
+    pub(crate) fn gather<T: Copy + Default + Send + Sync>(&self, col: &[T]) -> Vec<T> {
         match self {
             Self::Narrow(rows) => gather(col, rows, |k| k as usize),
             Self::Wide(rows) => gather(col, rows, |k| k),
@@ -44,6 +51,54 @@ impl RowIndex {
     }
 }
 
+/// Each row's index grouped by key, stable, and `offsets[k]` where key `k`'s rows start: rows
+/// placed first into ranges of keys, then each range sorted by its owner.
+fn grouped<I: Copy + Default + Send + Sync>(
+    key: &[u32],
+    offsets: &mut [usize],
+    index: impl Fn(usize) -> I + Sync,
+) -> Box<[I]> {
+    let n_keys = offsets.len() - 1;
+    let n_ranges = n_keys.div_ceil(1 << RANGE_BITS).max(1);
+    let mut places = Threads::All.count(key, GROUP_GRAIN, n_ranges, |_, chunk, row| {
+        for &k in chunk {
+            row[(k >> RANGE_BITS) as usize] += 1;
+        }
+    });
+    let ranges = places.offsets();
+    let mut pairs = vec![(0u32, I::default()); key.len()];
+    places.place(Threads::All, key, &mut pairs, |start, chunk, slots| {
+        for (i, &k) in chunk.iter().enumerate() {
+            slots.push((k >> RANGE_BITS) as usize, (k, index(start + i)));
+        }
+    });
+    let mut rows = vec![I::default(); key.len()];
+    let split = (
+        Pieces::new(&pairs[..], &ranges),
+        Pieces::new(&mut rows[..], &ranges),
+        Blocks::new(&mut offsets[..n_keys], 1 << RANGE_BITS),
+    );
+    Threads::All.for_each_item(split, |r, (pairs, rows, (_, offsets))| {
+        let first = r << RANGE_BITS;
+        let mut places = Threads::ONE.count(pairs, 1, offsets.len(), |_, pairs, row| {
+            for &(k, _) in pairs {
+                row[k as usize - first] += 1;
+            }
+        });
+        for (o, p) in offsets.iter_mut().zip(places.offsets()) {
+            *o = ranges[r] + p;
+        }
+        places.place(Threads::ONE, pairs, rows, |_, pairs, slots| {
+            for &(k, i) in pairs {
+                slots.push(k as usize - first, i);
+            }
+        });
+    });
+    offsets[n_keys] = key.len();
+    rows.into_boxed_slice()
+}
+
+#[cfg(test)]
 fn stable_argsort<I: Copy + Default>(
     key: &[u32],
     offsets: &[usize],
@@ -61,8 +116,18 @@ fn stable_argsort<I: Copy + Default>(
 
 // Inlined into `Design::build`, its loop measured +3–8% on slope designs.
 #[inline(never)]
-fn gather<T: Copy, I: Copy>(col: &[T], rows: &[I], row: impl Fn(I) -> usize) -> Vec<T> {
-    rows.iter().map(|&k| col[row(k)]).collect()
+fn gather<T: Copy + Default + Send + Sync, I: Copy + Sync>(
+    col: &[T],
+    rows: &[I],
+    row: impl Fn(I) -> usize + Sync,
+) -> Vec<T> {
+    let mut out = vec![T::default(); rows.len()];
+    Threads::All.for_each_chunk(&mut out[..], GROUP_GRAIN, |start, chunk| {
+        for (o, &k) in chunk.iter_mut().zip(&rows[start..]) {
+            *o = col[row(k)];
+        }
+    });
+    out
 }
 
 fn scatter<I: Copy>(v: &[f64], rows: &[I], row: impl Fn(I) -> usize) -> Vec<f64> {
@@ -73,6 +138,7 @@ fn scatter<I: Copy>(v: &[f64], rows: &[I], row: impl Fn(I) -> usize) -> Vec<f64>
     out
 }
 
+#[cfg(test)]
 /// Group `k` of the counted `keys` owns `offsets[k]..offsets[k + 1]`.
 fn offsets(n_keys: usize, keys: impl IntoIterator<Item = usize>) -> Vec<usize> {
     let mut offsets = vec![0usize; n_keys + 1];
