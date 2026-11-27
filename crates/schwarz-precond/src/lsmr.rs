@@ -394,6 +394,9 @@ fn splitmix64_unit(i: u64) -> f64 {
 /// for at most one more audit than this.
 const MAX_RESTARTS: usize = 2;
 
+/// PROTOTYPE #607: plain measurements a pass makes on scratch before its audit decides.
+const MAX_MEASUREMENTS: usize = 3;
+
 /// Fixed metric `‖Âᵀb‖` reference for reporting.
 #[derive(Clone, Copy)]
 struct NormalEqReference {
@@ -480,12 +483,16 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         let mut recurrence = LsmrRecurrenceState::init(step1);
         let mut solution = SolutionState::init(bidiag.v(), step1.beta);
         let mut prev_rot = RotationStep::initial();
-        // PROTOTYPE #607: one plain measurement per solve, on its first pass.
+        // PROTOTYPE #607: plain measurements on scratch, mid-pass: one when the metric estimate first
+        // reaches the calibration level (first pass only), then one at each trigger, up to
+        // `MAX_MEASUREMENTS` per pass. Each either certifies the stop or recalibrates the trigger
+        // to the measured metric/plain ratio, and the pass goes on with its Krylov space.
         let mut calibrate_at = if restarts == 0 {
             criteria.calibration_level()
         } else {
             None
         };
+        let mut measurements = 0;
         // `None` asks for an audit; only the audit names a tolerance stop.
         let ended = 'pass: {
             while iterations < maxiter {
@@ -495,38 +502,47 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 let curr_rot = recurrence.step(step);
                 solution.update(bidiag.v(), curr_rot, prev_rot);
 
-                if let Some(level) = calibrate_at {
-                    let metric = convergence.backward_error_estimate(&recurrence);
-                    if metric <= level {
-                        calibrate_at = None;
-                        let x_now: Cow<'_, [f64]> = match &base {
-                            Some(b0) => {
-                                let mut x = solution.x().to_vec();
-                                axpby(&mut x, b0, 1.0, 1.0);
-                                Cow::Owned(x)
-                            }
-                            None => Cow::Borrowed(solution.x()),
-                        };
-                        if let Some((residual, normar)) = bidiag.measure(&x_now, b)? {
-                            let plain = backward_error(normar, bidiag.norm_floor()?, residual);
-                            if std::env::var_os("PROBE_TRACE").is_some() {
-                                eprintln!("[calibrate] it={iterations} metric={metric:.3e} plain={plain:.3e}");
-                            }
-                            if residual <= criteria.abs_tol() || plain <= criteria.rel_tol() {
-                                break 'pass None;
-                            }
-                            // An unmeasurable plain error (a zero floor) leaves the trigger as it is.
-                            let ratio = metric / plain;
-                            if ratio.is_finite() && ratio > 0.0 {
-                                criteria = criteria.recalibrated(ratio);
-                                convergence.set_criteria(criteria);
-                            }
+                // The tolerance test catches breakdown when the residual recurrences collapse.
+                let triggered = convergence.triggers_audit(&recurrence);
+                let metric = convergence.backward_error_estimate(&recurrence);
+                let probe = calibrate_at.is_some_and(|level| metric <= level);
+                if (triggered || probe)
+                    && measurements < MAX_MEASUREMENTS
+                    && criteria.calibration_level().is_some()
+                {
+                    calibrate_at = None;
+                    measurements += 1;
+                    let x_now: Cow<'_, [f64]> = match &base {
+                        Some(b0) => {
+                            let mut x = solution.x().to_vec();
+                            axpby(&mut x, b0, 1.0, 1.0);
+                            Cow::Owned(x)
+                        }
+                        None => Cow::Borrowed(solution.x()),
+                    };
+                    if let Some((residual, normar)) = bidiag.measure(&x_now, b)? {
+                        let plain = backward_error(normar, bidiag.norm_floor()?, residual);
+                        if std::env::var_os("PROBE_TRACE").is_some() {
+                            eprintln!(
+                                "[measure] it={iterations} triggered={triggered} metric={metric:.3e} plain={plain:.3e}"
+                            );
+                        }
+                        if residual <= criteria.abs_tol() || plain <= criteria.rel_tol() {
+                            break 'pass None;
+                        }
+                        // An unmeasurable plain error (a zero floor) leaves the trigger as it is.
+                        // A triggered stop whose estimate reads better than the truth (drift, or
+                        // the preconditioner's gap) goes to the audit and its restart, as before.
+                        let ratio = metric / plain;
+                        if ratio.is_finite() && ratio > 0.0 && !(triggered && ratio < 1.0) {
+                            criteria = criteria.recalibrated(ratio);
+                            convergence.set_criteria(criteria);
+                            prev_rot = curr_rot;
+                            continue;
                         }
                     }
                 }
-
-                // The tolerance test catches breakdown when the residual recurrences collapse.
-                if convergence.triggers_audit(&recurrence) {
+                if triggered {
                     break 'pass None;
                 }
                 if let Some(rule) = escalation.as_deref_mut() {
