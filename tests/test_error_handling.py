@@ -106,7 +106,7 @@ class TestErrorHandling:
 
     def test_approx_schur_config_split_zero_raises(self):
         """ApproxSchurConfig(split=0) should raise ValueError."""
-        with pytest.raises((ValueError, OverflowError)):
+        with pytest.raises(ValueError, match="^split must be >= 1$"):
             ApproxSchurConfig(split=0)
 
 

@@ -7,6 +7,8 @@
 //! change, caught mechanically by the cargo-semver-checks CI gate rather than
 //! slipping through silently.
 
+use std::num::NonZeroU32;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::BuildError;
@@ -71,14 +73,12 @@ impl LocalSolverConfig {
 
     pub(crate) fn factor_config(&self) -> approx_chol::Config {
         // `split_merge: None` and a split of `1` are standard AC; a count above one is AC2.
-        let sampling = |copies: Option<u32>| approx_chol::Sampling::CliqueTree {
-            copies: copies
-                .and_then(std::num::NonZeroU32::new)
-                .unwrap_or(std::num::NonZeroU32::MIN),
+        let sampling = |copies: Option<NonZeroU32>| approx_chol::Sampling::CliqueTree {
+            copies: copies.unwrap_or(NonZeroU32::MIN),
         };
         approx_chol::Config {
             seed: self.approx_chol.seed,
-            sampling: sampling(self.approx_chol.split_merge),
+            sampling: sampling(self.approx_chol.split_merge.and_then(NonZeroU32::new)),
             exact_max_dim: self.dense_threshold,
             complement: match self.schur {
                 SchurMode::Approximate(ApproxSchurConfig { split }) => {
@@ -138,15 +138,39 @@ impl Default for ScalingConfig {
 }
 
 /// Approximate Schur via GKS 2023 Algorithm 3, drawing from [`ApproxCholConfig::seed`].
+///
+/// The split factor is nonzero in Rust as well as Python:
+///
+/// ```
+/// use std::num::NonZeroU32;
+/// use within::ApproxSchurConfig;
+///
+/// let config = ApproxSchurConfig {
+///     split: NonZeroU32::new(2).unwrap(),
+/// };
+/// let _ = config;
+/// ```
+///
+/// ```compile_fail
+/// use std::num::NonZeroU32;
+/// use within::ApproxSchurConfig;
+///
+/// let config = ApproxSchurConfig {
+///     split: 0,
+/// };
+/// let _ = config;
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApproxSchurConfig {
     /// Star-edge split factor: `1` is standard, `k > 1` a denser approximation at more fill-in.
-    pub split: u32,
+    pub split: NonZeroU32,
 }
 
 impl Default for ApproxSchurConfig {
     fn default() -> Self {
-        Self { split: 1 }
+        Self {
+            split: NonZeroU32::MIN,
+        }
     }
 }
 
@@ -242,5 +266,44 @@ impl Default for LsmrOptions {
             maxiter: 1000,
             local_size: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApproxSchurConfig;
+    use rstest::rstest;
+    use std::num::NonZeroU32;
+
+    #[derive(serde::Serialize)]
+    struct LegacyApproxSchurConfig {
+        split: u32,
+    }
+
+    #[test]
+    fn approximate_schur_default_is_standard_sampling() {
+        let config = ApproxSchurConfig::default();
+        assert_eq!(config.split.get(), 1);
+    }
+
+    #[rstest]
+    fn approximate_schur_positive_wire_bytes_are_unchanged(#[values(1, 2, u32::MAX)] split: u32) {
+        let legacy = LegacyApproxSchurConfig { split };
+        let config = ApproxSchurConfig {
+            split: NonZeroU32::new(split).unwrap(),
+        };
+        let bytes = postcard::to_stdvec(&legacy).expect("serialize legacy fields");
+        assert_eq!(postcard::to_stdvec(&config).unwrap(), bytes);
+        assert_eq!(
+            postcard::from_bytes::<ApproxSchurConfig>(&bytes).unwrap(),
+            config
+        );
+    }
+
+    #[test]
+    fn approximate_schur_rejects_zero_on_deserialization() {
+        let bytes = postcard::to_stdvec(&LegacyApproxSchurConfig { split: 0 })
+            .expect("serialize legacy zero split");
+        assert!(postcard::from_bytes::<ApproxSchurConfig>(&bytes).is_err());
     }
 }
