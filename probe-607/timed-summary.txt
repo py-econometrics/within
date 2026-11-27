@@ -1,0 +1,68 @@
+534 runs; errors 0
+bits/iterations differ across rounds: []
+not converged / audit > tol / refuted: []
+
+panel                                                 main                   cal                 climb              climb+bd
+akm10m_mobility0.001_intercepts         24   0.65[0.57,0.7    23   0.73[0.69,0.8    17   0.70[0.61,1.1    17   0.67[0.62,0.9
+akm_mobility0.001_experience_tenure    582   1.69[1.39,3.6   582   2.79[1.80,5.0    98   0.47[0.39,0.9    95   0.61[0.37,1.2
+akm_mobility0.001_intercepts            18   0.07[0.06,0.1    17   0.06[0.06,0.0    15   0.07[0.06,0.0    15   0.07[0.06,0.1
+akm_mobility0.001_near_shared_year   15105  41.44[34.47,70  4364  13.47[9.82,29.    47   0.36[0.28,0.3    44   0.36[0.30,0.4
+akm_mobility0.05_experience_tenure     949   3.37[2.06,5.1   468   1.90[1.13,3.7   186   1.35[0.95,2.9   133   0.99[0.71,1.1
+akm_mobility0.05_intercepts             31   0.14[0.07,0.3    26   0.11[0.07,0.1    24   0.09[0.07,0.1    24   0.10[0.07,0.1
+akm_mobility0.05_near_shared_year    19063  78.55[38.30,11  5140  13.12[10.42,25    55   0.54[0.42,0.6    54   0.59[0.45,1.2
+akm_mobility1.0_experience_tenure       17   0.10[0.06,0.1    16   0.10[0.07,0.1    16   0.08[0.07,0.1    16   0.12[0.10,0.1
+akm_mobility1.0_intercepts              14   0.04[0.03,0.0    13   0.04[0.03,0.0    13   0.04[0.03,0.0    13   0.04[0.03,0.0
+akm_mobility1.0_near_shared_year        54   0.83[0.76,1.5    27   0.68[0.61,0.7    25   0.67[0.60,1.0    25   0.71[0.65,1.4
+akm_sorting1e4_experience_tenure        40   0.54[0.48,0.6    33   0.50[0.45,0.7    32   0.63[0.54,0.9    32   0.66[0.58,0.8
+akm_sorting1e4_intercepts               35   0.34[0.29,1.0    28   0.32[0.27,0.3    27   0.38[0.35,0.4    27   0.40[0.36,0.6
+akm_sorting1e4_near_shared_year        716   6.64[5.06,7.3   452   4.20[3.40,4.9   467   4.45[3.64,5.5   392   3.86[3.21,5.9
+baci                                    11   0.27[0.19,0.3    11   0.29[0.21,0.4    11   0.29[0.21,0.3    11   0.28[0.21,0.3
+fixest3_difficult                       21   0.06[0.05,0.0    20   0.06[0.05,0.1    16   0.06[0.05,0.0    16   0.06[0.05,0.0
+gravity                                  7   0.09[0.08,0.1     7   0.11[0.09,0.2     7   0.10[0.09,0.1     7   0.10[0.09,0.1
+hmda_us                                 11   0.09[0.06,0.1     9   0.09[0.06,0.1     9   0.08[0.06,0.1     9   0.13[0.08,0.2
+random5fe                               11   0.06[0.05,0.0    10   0.08[0.05,0.1    10   0.07[0.05,0.1    10   0.07[0.05,0.0
+taxi                                     7   1.27[1.21,1.6     7   1.41[1.30,1.5     7   1.41[1.29,1.5     7   1.44[1.31,1.5
+
+hard geomean time / iterations:
+  main      time   10.42s  iterations  2578.0
+  cal       time    5.23s  iterations  1225.3
+  climb     time    0.88s  iterations   117.1
+  climb+bd  time    0.87s  iterations   103.3
+
+easy panels: ratio of median time to main, and whether beyond spread (candidate min > main max)
+  cal [('akm10m_mobility0.001_intercepts', 1.14, ''), ('mobility1.0_intercepts', 1.06, ''), ('baci', 1.06, ''), ('fixest3_difficult', 1.11, ''), ('gravity', 1.25, ''), ('random5fe', 1.33, ''), ('taxi', 1.12, '')]
+  climb [('akm10m_mobility0.001_intercepts', 1.09, ''), ('mobility1.0_intercepts', 1.11, ''), ('sorting1e4_experience_tenure', 1.15, ''), ('sorting1e4_intercepts', 1.12, ''), ('baci', 1.06, ''), ('gravity', 1.14, ''), ('random5fe', 1.22, ''), ('taxi', 1.12, '')]
+  climb+bd [('mobility1.0_experience_tenure', 1.26, ''), ('mobility1.0_intercepts', 1.12, ''), ('sorting1e4_experience_tenure', 1.21, ''), ('sorting1e4_intercepts', 1.17, ''), ('gravity', 1.12, ''), ('hmda_us', 1.51, ''), ('random5fe', 1.18, ''), ('taxi', 1.13, '')]
+
+peaks MB (median): setup above loaded / end-of-run, per variant
+akm10m_mobility0.001_intercepts     main:172/1048 climb:174/1051 climb+bd:172/1096 Fs:564/1065 Fc:571/1043 
+akm_mobility0.001_experience_tenure main:66/254 climb:66/264 climb+bd:95/290 Fs:160/252 Fc:178/260 
+akm_mobility0.001_intercepts        main:17/146 climb:18/146 climb+bd:18/146 Fs:67/148 Fc:71/150 
+akm_mobility0.001_near_shared_year  main:65/259 climb:67/265 climb+bd:94/298 Fs:177/266 Fc:187/269 
+akm_mobility0.05_experience_tenure  main:69/274 climb:69/308 climb+bd:104/324 Fs:189/272 Fc:203/304 
+akm_mobility0.05_intercepts         main:19/144 climb:19/143 climb+bd:19/144 Fs:64/137 Fc:67/143 
+akm_mobility0.05_near_shared_year   main:69/279 climb:70/312 climb+bd:101/338 Fs:187/272 Fc:210/309 
+akm_mobility1.0_experience_tenure   main:83/214 climb:84/218 climb+bd:140/268 Fs:392/476 Fc:387/480 
+akm_mobility1.0_intercepts          main:25/129 climb:25/131 climb+bd:26/131 Fs:164/242 Fc:164/254 
+akm_mobility1.0_near_shared_year    main:83/868 climb:83/875 climb+bd:139/876 Fs:755/853 Fc:755/835 
+akm_sorting1e4_experience_tenure    main:80/407 climb:83/423 climb+bd:135/428 Fs:325/404 Fc:320/409 
+akm_sorting1e4_intercepts           main:24/221 climb:25/232 climb+bd:25/231 Fs:138/212 Fc:137/224 
+akm_sorting1e4_near_shared_year     main:81/705 climb:80/727 climb+bd:133/715 Fs:606/699 Fc:619/720 
+baci                                main:86/861 climb:86/862 climb+bd:86/862 Fs:151/927 Fc:157/932 
+fixest3_difficult                   main:13/150 climb:13/150 climb+bd:13/149 Fs:80/145 Fc:93/158 
+gravity                             main:60/339 climb:60/339 climb+bd:61/340 Fs:375/556 Fc:416/558 
+hmda_us                             main:56/196 climb:56/196 climb+bd:56/196 Fs:306/415 Fc:309/422 
+random5fe                           main:28/142 climb:28/142 climb+bd:28/142 Fs:869/1018 Fc:863/930 
+taxi                                main:478/3375 climb:478/3375 climb+bd:478/3375 Fs:482/3379 Fc:1372/4269 
+
+Q5 setup B/obs (setup peak above loaded), Fs vs Fc, median:
+  taxi                                 Fs   12.1  Fc   34.5 B/obs  ratio 2.85  construct Fs 0.67s Fc 1.19s  coarse=declined
+  akm10m_mobility0.001_intercepts      Fs   59.1  Fc   59.9 B/obs  ratio 1.01  construct Fs 0.21s Fc 0.42s  coarse=declined
+  baci                                 Fs   14.7  Fc   15.3 B/obs  ratio 1.04  construct Fs 0.10s Fc 0.26s  coarse=declined
+  gravity                              Fs  108.5  Fc  120.3 B/obs  ratio 1.11  construct Fs 0.17s Fc 0.43s  coarse=declined
+  random5fe                            Fs  911.1  Fc  904.9 B/obs  ratio 0.99  construct Fs 0.95s Fc 1.07s  coarse=declined
+  akm_mobility0.001_near_shared_year   Fs  185.4  Fc  196.4 B/obs  ratio 1.06  construct Fs 0.08s Fc 0.14s  coarse=built
+  akm_mobility0.05_near_shared_year    Fs  195.7  Fc  220.2 B/obs  ratio 1.13  construct Fs 0.12s Fc 0.21s  coarse=built
+  akm_mobility0.001_experience_tenure  Fs  168.2  Fc  187.0 B/obs  ratio 1.11  construct Fs 0.07s Fc 0.12s  coarse=built
+  akm_mobility0.05_experience_tenure   Fs  198.5  Fc  213.2 B/obs  ratio 1.07  construct Fs 0.12s Fc 0.19s  coarse=built
+  akm_sorting1e4_near_shared_year      Fs  635.7  Fc  649.3 B/obs  ratio 1.02  construct Fs 0.68s Fc 0.78s  coarse=declined

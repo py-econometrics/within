@@ -1,0 +1,26 @@
+285 runs 0 errors
+round2/others ratio, groups >0.5s: median 0.94, max 3.22 ('akm_mobility0.05_near_shared_year', 'coarse', 'F_schwarz')
+ratios >1.3: [(1.7, 'akm10m_mobility0.001_intercepts', 'coarse/B'), (3.22, 'akm_mobility0.05_near_shared_year', 'coarse/F_schwarz')]
+groups with differing bits or iterations across rounds: []
+not converged or residual>tol: [('akm_mobility0.001_experience_tenure', 'coarse/F_schwarz', '1.28e-08'), ('akm_mobility0.001_near_shared_year', 'coarse/F_schwarz', '3.90e-08'), ('akm_mobility0.05_experience_tenure', 'coarse/F_schwarz', '2.15e-08'), ('akm_mobility0.05_near_shared_year', 'coarse/F_schwarz', '6.44e-08'), ('baci', 'coarse/B', '1.85e-08'), ('baci', 'coarse/F_coarse', '1.23e-08'), ('baci', 'coarse/F_schwarz', '1.23e-08'), ('baci', 'main/OL', '1.85e-08'), ('fixest3_difficult', 'coarse/B', '1.85e-08'), ('fixest3_difficult', 'coarse/F_coarse', '2.49e-08'), ('fixest3_difficult', 'coarse/F_schwarz', '2.49e-08'), ('gravity', 'coarse/B', '4.55e-08'), ('gravity', 'coarse/F_coarse', '2.13e-07'), ('gravity', 'coarse/F_schwarz', '2.13e-07'), ('gravity', 'main/F_schwarz', '3.31e-08'), ('gravity', 'main/OL', '4.55e-08'), ('hmda_us', 'coarse/B', '1.91e-07'), ('hmda_us', 'coarse/F_coarse', '1.35e-07'), ('hmda_us', 'coarse/F_schwarz', '1.35e-07'), ('hmda_us', 'main/F_schwarz', '3.71e-08'), ('hmda_us', 'main/OL', '1.91e-07'), ('taxi', 'coarse/B', '2.85e-08'), ('taxi', 'coarse/F_coarse', '4.86e-08'), ('taxi', 'coarse/F_schwarz', '4.86e-08'), ('taxi', 'main/F_schwarz', '4.03e-08'), ('taxi', 'main/OL', '2.85e-08')]
+
+panel                                  OLit       OL s [min,max]   Bit      B s [min,max]      rung   B/OL |    peak MB: OL B Fs Fc | Fc/Fs setup MB
+akm10m_mobility0.001_intercepts          24    0.78 [ 0.70, 0.79]    18   0.85 [0.69,1.30]   Schwarz   1.09 |  1028  1101  1006   934 |    671/643   
+akm_mobility0.001_experience_tenure     582    2.54 [ 1.77, 2.83]    95   0.59 [0.58,1.06]  TwoLevel   0.23 |   247   313   279   307 |    227/200   
+akm_mobility0.001_intercepts             18    0.08 [ 0.07, 0.09]    15   0.08 [0.07,0.09]   Schwarz   0.99 |   137   139   132   137 |     80/75    
+akm_mobility0.001_near_shared_year    15105   54.85 [41.43,72.98]    44   0.39 [0.32,0.88]  TwoLevel   0.01 |   253   313   265   296 |    216/186   
+akm_mobility0.05_experience_tenure      949    2.81 [ 2.81, 3.28]   206   1.25 [1.20,1.42]  TwoLevel   0.44 |   269   335   280   323 |    244/199   
+akm_mobility0.05_intercepts              31    0.10 [ 0.09, 0.10]    25   0.09 [0.08,0.10]   Schwarz   0.89 |   138   140   133   141 |     82/75    
+akm_mobility0.05_near_shared_year     19063   68.80 [65.51,82.12]    58   0.61 [0.53,0.63]  TwoLevel   0.01 |   269   349   295   334 |    254/216   
+akm_mobility1.0_experience_tenure        17    0.11 [ 0.10, 0.18]    16   0.18 [0.15,0.31]  Diagonal   1.63 |   187   189   518   529 |    447/439   
+akm_mobility1.0_intercepts               14    0.04 [ 0.04, 0.04]    13   0.04 [0.04,0.05]  Diagonal   1.10 |   102    98   248   254 |    188/191   
+akm_mobility1.0_near_shared_year         54    1.12 [ 1.09, 1.14]    49   1.22 [1.10,1.35]   Schwarz   1.09 |   849   965   948   946 |    867/853   
+akm_sorting1e4_experience_tenure         40    0.72 [ 0.67, 0.75]    35   0.82 [0.80,0.84]   Schwarz   1.13 |   428   511   480   497 |    405/401   
+akm_sorting1e4_intercepts                35    0.37 [ 0.36, 0.40]    31   0.42 [0.40,0.42]   Schwarz   1.13 |   223   240   231   232 |    175/174   
+akm_sorting1e4_near_shared_year         716    7.65 [ 7.64, 7.87]   476   6.08 [4.96,6.18]   Schwarz   0.80 |   709   850   832   847 |    748/745   
+baci                                     11    0.50 [ 0.24, 0.62]    11   0.20 [0.20,0.36]  Diagonal   0.40 |   614   613   678   685 |    156/149   
+fixest3_difficult                        21    0.06 [ 0.06, 0.06]    18   0.06 [0.05,0.10]   Schwarz   0.93 |   146   144   135   148 |     92/78    
+gravity                                   7    0.10 [ 0.09, 0.11]     7   0.09 [0.08,0.10]  Diagonal   0.84 |   296   254   497   547 |    431/381   
+hmda_us                                  11    0.07 [ 0.07, 0.08]    11   0.07 [0.07,0.08]  Diagonal   1.02 |   177   182   460   469 |    360/354   
+random5fe                                11    0.06 [ 0.05, 0.06]    10   0.05 [0.05,0.06]  Diagonal   0.88 |   125   112  1105   993 |    929/961   
+taxi                                      7    1.41 [ 1.35, 1.45]     7   1.88 [1.79,2.11]  Diagonal   1.33 |  2739  2435  2439  3321 |   1370/482   
