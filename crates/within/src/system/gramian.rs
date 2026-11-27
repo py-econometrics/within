@@ -24,19 +24,19 @@ pub(crate) struct PairBlock<'p> {
     pub(crate) pair: ChannelPair,
     /// `G`'s block on `pair`: `G = V Vᵀ`, one column per observation.
     factor: BipartiteFactorWidth2<'p, f64>,
-    form: BlockForm,
+    shape: BlockShape,
 }
 
 impl PairBlock<'_> {
-    /// The local operator's approximate inverse, formed from `G`'s block as [`BlockForm`] says.
+    /// The local operator's approximate inverse, formed from `G`'s block as its [`BlockShape`] says.
     pub(crate) fn factorize(
         &self,
         approx: Config,
         scaling: ScalingPolicy,
     ) -> Result<ApproxInverse, approx_chol::BuildError> {
-        match self.form {
-            BlockForm::Kept { .. } => approx_chol::factorize_with(self.factor, approx, scaling),
-            BlockForm::Complement { side, .. } => {
+        match self.shape {
+            BlockShape::Kept { .. } => approx_chol::factorize_with(self.factor, approx, scaling),
+            BlockShape::Complement { side, .. } => {
                 approx_chol::factorize_complement(self.factor, side, approx, scaling)
             }
         }
@@ -44,13 +44,13 @@ impl PairBlock<'_> {
 
     /// The unknown at vertex `vertex` of the factored operator.
     pub(crate) fn unknown(&self, vertex: usize) -> usize {
-        self.form.unknown(vertex)
+        self.shape.unknown(vertex)
     }
 }
 
-/// How the local operator is formed from `G`'s block, and where its vertices sit among the
-/// unknowns.
-enum BlockForm {
+/// Which operator a pair block is, `G`'s block or its complement, and where its vertices sit
+/// among the unknowns.
+enum BlockShape {
     /// Both channels kept: `G`'s block itself, its vertices the rows' slots, then the columns'.
     Kept {
         rows: Range<usize>,
@@ -61,7 +61,7 @@ enum BlockForm {
     Complement { kept: Range<usize>, side: Side },
 }
 
-impl BlockForm {
+impl BlockShape {
     /// The unknown at vertex `vertex` of the formed block.
     fn unknown(&self, vertex: usize) -> usize {
         match self {
@@ -114,7 +114,7 @@ impl<'p> Gramian<'p> {
                         cols: *cols,
                     };
                     let (rows, cols) = (at_rows.clone(), at_cols.clone());
-                    blocks.push(self.block(pair, BlockForm::Kept { rows, cols }));
+                    blocks.push(self.block(pair, BlockShape::Kept { rows, cols }));
                 }
             }
         }
@@ -128,14 +128,14 @@ impl<'p> Gramian<'p> {
                     (ChannelPair { rows, cols }, Side::Left)
                 };
                 let kept = at.clone();
-                blocks.push(self.block(pair, BlockForm::Complement { kept, side }));
+                blocks.push(self.block(pair, BlockShape::Complement { kept, side }));
             }
         }
         blocks
     }
 
     /// `pair`'s block of `G` as its factor `V`, `√w_k (z_q(k) e_{a_k} + z_r(k) e_{n_q + b_k})`.
-    fn block(&self, pair: ChannelPair, form: BlockForm) -> PairBlock<'p> {
+    fn block(&self, pair: ChannelPair, shape: BlockShape) -> PairBlock<'p> {
         let (rows, cols) = (
             self.design.split.term(pair.rows.term),
             self.design.split.term(pair.cols.term),
@@ -154,7 +154,11 @@ impl<'p> Gramian<'p> {
             None => BipartiteFactorWidth2::new(left, right),
         }
         .expect("both sides read the same observations");
-        PairBlock { pair, factor, form }
+        PairBlock {
+            pair,
+            factor,
+            shape,
+        }
     }
 }
 
