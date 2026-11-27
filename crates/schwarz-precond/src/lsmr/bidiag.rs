@@ -367,6 +367,15 @@ pub(super) trait Bidiagonalization {
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError>;
     /// Spend the stream for the `rhs − A x` that [`residual_norm`](Self::residual_norm) staged.
     fn into_residual(self) -> Vec<f64>;
+    /// PROTOTYPE #607: `‖rhs − A x‖` and `‖Aᵀ(rhs − A x)‖` on scratch the stream does not carry,
+    /// so the pass continues; `None` where either is out of range.
+    fn measure(
+        &mut self,
+        _x: &[f64],
+        _rhs: &[f64],
+    ) -> Result<Option<(f64, Magnitude)>, SolveError> {
+        Ok(None)
+    }
     /// After `α₁ = 0`, a gradient the metric hid: `‖Aᵀ rhs‖ / ‖rhs‖` and `‖Aᵀ b‖`.
     fn hidden_gradient(
         &mut self,
@@ -449,6 +458,28 @@ impl<A: Operator + ?Sized, M: Operator + ?Sized> Bidiagonalization
 
     fn into_residual(self) -> Vec<f64> {
         self.bufs.u
+    }
+
+    fn measure(&mut self, x: &[f64], rhs: &[f64]) -> Result<Option<(f64, Magnitude)>, SolveError> {
+        let bufs = &mut self.bufs;
+        // `av` and `atu` are rewritten by the next step before they are read.
+        let residual = residual_into(
+            self.operator,
+            x,
+            rhs,
+            &mut bufs.av,
+            MemStack::new(&mut bufs.stack),
+        )?;
+        if !residual.is_normal() {
+            return Ok(None);
+        }
+        self.operator.apply_adjoint_with(
+            &bufs.av,
+            &mut bufs.atu,
+            MemStack::new(&mut bufs.stack),
+        )?;
+        let g = par_norm(&bufs.atu);
+        Ok(g.is_normal().then(|| (residual, Magnitude::from(g))))
     }
 
     fn restart(&mut self, beta: f64) -> Result<BidiagStep, SolveError> {

@@ -47,7 +47,7 @@ impl Operator for Padded {
 /// still widens across restarts for the few it leaves.
 #[rstest]
 #[case::plain(false, 0)]
-#[case::preconditioned(true, 5)]
+#[case::preconditioned(true, 0)] // PROTOTYPE #607: was 5 before the calibrated trigger
 fn every_stop_converges_and_meets_its_tolerance(
     #[case] preconditioned: bool,
     #[case] unconverged: usize,

@@ -13,7 +13,9 @@ use std::borrow::Cow;
 use crate::{MemBuffer, MemStack, Operator, SolveError};
 use bidiag::{axpby, normalize, par_norm, BidiagStep, Bidiagonalization, StagedStart};
 use magnitude::Magnitude;
-use recurrence::{Audit, ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState};
+use recurrence::{
+    backward_error, Audit, ConvergenceCriteria, LsmrRecurrenceState, RotationStep, SolutionState,
+};
 
 /// Euclidean norm of a vector.
 ///
@@ -478,6 +480,12 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         let mut recurrence = LsmrRecurrenceState::init(step1);
         let mut solution = SolutionState::init(bidiag.v(), step1.beta);
         let mut prev_rot = RotationStep::initial();
+        // PROTOTYPE #607: one plain measurement per solve, on its first pass.
+        let mut calibrate_at = if restarts == 0 {
+            criteria.calibration_level()
+        } else {
+            None
+        };
         // `None` asks for an audit; only the audit names a tolerance stop.
         let ended = 'pass: {
             while iterations < maxiter {
@@ -486,6 +494,36 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 convergence.observe(step);
                 let curr_rot = recurrence.step(step);
                 solution.update(bidiag.v(), curr_rot, prev_rot);
+
+                if let Some(level) = calibrate_at {
+                    let metric = convergence.backward_error_estimate(&recurrence);
+                    if metric <= level {
+                        calibrate_at = None;
+                        let x_now: Cow<'_, [f64]> = match &base {
+                            Some(b0) => {
+                                let mut x = solution.x().to_vec();
+                                axpby(&mut x, b0, 1.0, 1.0);
+                                Cow::Owned(x)
+                            }
+                            None => Cow::Borrowed(solution.x()),
+                        };
+                        if let Some((residual, normar)) = bidiag.measure(&x_now, b)? {
+                            let plain = backward_error(normar, bidiag.norm_floor()?, residual);
+                            if std::env::var_os("PROBE_TRACE").is_some() {
+                                eprintln!("[calibrate] it={iterations} metric={metric:.3e} plain={plain:.3e}");
+                            }
+                            if residual <= criteria.abs_tol() || plain <= criteria.rel_tol() {
+                                break 'pass None;
+                            }
+                            // An unmeasurable plain error (a zero floor) leaves the trigger as it is.
+                            let ratio = metric / plain;
+                            if ratio.is_finite() && ratio > 0.0 {
+                                criteria = criteria.recalibrated(ratio);
+                                convergence.set_criteria(criteria);
+                            }
+                        }
+                    }
+                }
 
                 // The tolerance test catches breakdown when the residual recurrences collapse.
                 if convergence.triggers_audit(&recurrence) {
@@ -543,6 +581,9 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
         let audit = criteria.certify(residual_norm, || {
             Ok((bidiag.plain_gradient(residual_norm)?, bidiag.norm_floor()?))
         })?;
+        if std::env::var_os("PROBE_TRACE").is_some() {
+            eprintln!("[audit] it={iterations} restarts={restarts} audit={audit:?}");
+        }
         let (stop_reason, normal_eq_residual, true_residual) = match audit {
             Audit::Certified(stop_reason) => (
                 stop_reason,
@@ -557,7 +598,15 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 base = Some(Cow::Owned(x));
                 // The seed measures the metric backward error `α₁ / ‖Â‖` of the same `r`: a
                 // preconditioner's steady gap to the plain one, which recurrence drift cannot fake.
-                criteria = criteria.tightened(backward_error * convergence.a_norm() / step1.alpha);
+                let gap = backward_error * convergence.a_norm() / step1.alpha;
+                if std::env::var_os("PROBE_TRACE").is_some() {
+                    eprintln!(
+                        "[audit] gap={gap:.3e} a_norm={:.3e} alpha1={:.3e}",
+                        convergence.a_norm(),
+                        step1.alpha
+                    );
+                }
+                criteria = criteria.tightened(gap);
                 continue;
             }
             Audit::Refuted { .. } => {

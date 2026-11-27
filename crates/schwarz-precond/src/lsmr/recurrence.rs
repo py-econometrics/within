@@ -283,12 +283,18 @@ impl SolutionState {
         });
     }
 
+    /// PROTOTYPE #607: the correction so far, without ending the pass.
+    pub(super) fn x(&self) -> &[f64] {
+        &self.x
+    }
+
     pub(super) fn into_x(self) -> Vec<f64> {
         self.x
     }
 }
 
 /// What an audit's measurements decide.
+#[derive(Debug)]
 pub(super) enum Audit {
     /// The measured `r`, or `r` and `Aᵀr`, meet the tolerance.
     Certified(LsmrStopReason),
@@ -324,6 +330,33 @@ impl ConvergenceCriteria {
         }
     }
 
+    /// PROTOTYPE #607: the trigger a measured `metric / plain` backward-error ratio calls for, looser
+    /// or tighter than the tolerance: the metric estimate the plain error meets the tolerance at.
+    pub(super) fn recalibrated(self, metric_over_plain: f64) -> Self {
+        Self {
+            trigger_rel: self.rel_tol * metric_over_plain,
+            ..self
+        }
+    }
+
+    /// PROTOTYPE #607: the metric estimate at which a pass measures its plain backward error once,
+    /// `PROBE_CAL`× the trigger (default 100; at most 1 disables it).
+    pub(super) fn calibration_level(&self) -> Option<f64> {
+        let k: f64 = std::env::var("PROBE_CAL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100.0);
+        (k > 1.0).then_some(self.trigger_rel * k)
+    }
+
+    pub(super) fn rel_tol(&self) -> f64 {
+        self.rel_tol
+    }
+
+    pub(super) fn abs_tol(&self) -> f64 {
+        self.abs_tol
+    }
+
     pub(super) fn start(self, alpha1: f64) -> ConvergenceState {
         ConvergenceState {
             criteria: self,
@@ -344,6 +377,12 @@ impl ConvergenceCriteria {
         }
         let (normar, floor) = gradient()?;
         let backward_error = backward_error(normar, floor, residual);
+        if std::env::var_os("PROBE_TRACE").is_some() {
+            eprintln!(
+                "[certify] backward_error={backward_error:.3e} rel_tol={:.1e} trigger_rel={:.3e}",
+                self.rel_tol, self.trigger_rel
+            );
+        }
         Ok(if backward_error <= self.rel_tol {
             Audit::Certified(LsmrStopReason::NormalEquationTolerance)
         } else {
@@ -377,6 +416,17 @@ impl ConvergenceState {
         let normar = Magnitude::from(r.normal_eq_qr.normar());
         r.rhs_norm * unit_residual <= self.criteria.abs_tol
             || backward_error(normar, self.a_norm, unit_residual) <= self.criteria.trigger_rel
+    }
+
+    /// PROTOTYPE #607: the stream's metric backward-error estimate, as the trigger reads it.
+    pub(super) fn backward_error_estimate(&self, r: &LsmrRecurrenceState) -> f64 {
+        let normar = Magnitude::from(r.normal_eq_qr.normar());
+        backward_error(normar, self.a_norm, r.unit_residual())
+    }
+
+    /// PROTOTYPE #607: swap in recalibrated criteria mid-pass.
+    pub(super) fn set_criteria(&mut self, criteria: ConvergenceCriteria) {
+        self.criteria = criteria;
     }
 
     /// The floor under `‖Â‖₂` this pass has seen.
