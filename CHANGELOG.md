@@ -8,6 +8,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - A design whose rows are not sorted by its dominant term gathers every term's levels in its new row order in parallel, and so does a solve its responses: design −38% and solve −17% at 160M rows on a shuffled 3-FE panel, bit-identical at any thread count.
+- Grouping rows by a term's levels runs in parallel on inflight's `Places`. At 160M rows on a shuffled 3-FE panel, grouping takes 0.19 s against 2.2 s and design 0.97 s against 3.0 s (12 threads), bit-identical at any thread count. A design with a fine unsorted term, which groups its own rows, holds 7.2 B/obs more at its peak while it does (8 B/obs per such term grouped at once; 16 past `u32::MAX` rows).
 - Long weighted Gram diagonals use compensated accumulation.
 - Weights near either end of the float range are scaled by a power of four, so a level's weight sum and its reciprocal stay finite.
 
