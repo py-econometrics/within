@@ -78,24 +78,6 @@ fn find(parent: &mut [u32], mut x: u32) -> u32 {
     x
 }
 
-/// `Σ a aᵀ` over a spell's `(position, row)`s, `a(at, r, j)` the weighted entry in column `j`.
-fn spell_gram(
-    p: usize,
-    spell: &[(usize, usize, usize)],
-    a: impl Fn(usize, usize, usize) -> f64,
-    out: &mut [f64],
-) {
-    out.fill(0.0);
-    for &(_, at, r) in spell {
-        for i in 0..p {
-            let ai = a(at, r, i);
-            for j in 0..p {
-                out[i * p + j] += ai * a(at, r, j);
-            }
-        }
-    }
-}
-
 /// Per eliminated level, the anchor levels its weighted rows reach and, of those, the ones whose
 /// spell's Gram is within [`GLUE_RATIO`] of both levels' own; each ascending.
 fn spells(rows: &Rows<'_>, anchor: &Anchor<'_>) -> (Vec<Vec<u32>>, Vec<Vec<u32>>) {
@@ -105,21 +87,29 @@ fn spells(rows: &Rows<'_>, anchor: &Anchor<'_>) -> (Vec<Vec<u32>>, Vec<Vec<u32>>
         .map(|lw| {
             let basis = rows.level(lw);
             let level: Vec<f64> = (0..p).map(|a| basis.norm2(a)).collect();
-            let mut gram = vec![0.0; p * p];
-            let mut by_anchor: Vec<(usize, usize, usize)> = (basis.weighted())
-                .map(|(at, r)| (anchor.level(r), at, r))
-                .collect();
-            by_anchor.sort_unstable();
+            // PROTOTYPE(#607) Q5: both spell Grams accumulate per anchor level while the rows
+            // stream in order, so no per-row list is kept; the sums run in the same row order.
+            let mut by_anchor: std::collections::BTreeMap<u32, Vec<f64>> = Default::default();
+            for (at, r) in basis.weighted() {
+                let grams = (by_anchor.entry(anchor.level(r) as u32))
+                    .or_insert_with(|| vec![0.0; 2 * p * p]);
+                let (eliminated, anchored) = grams.split_at_mut(p * p);
+                for i in 0..p {
+                    let (ei, ai) = (basis.entry(at, i), rows.root(r) * anchor.loading(r, i));
+                    for j in 0..p {
+                        eliminated[i * p + j] += ei * basis.entry(at, j);
+                        anchored[i * p + j] += ai * (rows.root(r) * anchor.loading(r, j));
+                    }
+                }
+            }
             let (mut reached, mut glued) = (Vec::new(), Vec::new());
-            for spell in by_anchor.chunk_by(|a, b| a.0 == b.0) {
-                let lf = spell[0].0 as u32;
+            for (lf, grams) in by_anchor {
                 reached.push(lf);
-                spell_gram(p, spell, |at, _, j| basis.entry(at, j), &mut gram);
-                let eliminated = pencil_condition(&gram, &level);
-                let anchored = |_, r, j| rows.root(r) * anchor.loading(r, j);
-                spell_gram(p, spell, anchored, &mut gram);
-                let own = anchor.gram(spell[0].0, p);
-                if eliminated.max(pencil_condition(&gram, &own)) <= GLUE_RATIO {
+                let (eliminated, anchored) = grams.split_at(p * p);
+                let own = anchor.gram(lf as usize, p);
+                let ratio =
+                    pencil_condition(eliminated, &level).max(pencil_condition(anchored, &own));
+                if ratio <= GLUE_RATIO {
                     glued.push(lf);
                 }
             }
