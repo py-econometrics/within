@@ -262,7 +262,19 @@ fn max_abs_group_mean(design: &ReducedDesign<'_>, demeaned: &[f64]) -> f64 {
 
 /// Schwarz built up front, so an aliased solve rests on the local solves.
 fn additive() -> PreconditionerConfig {
-    PreconditionerConfig::Schwarz(crate::config::Schwarz::default())
+    probe_config().unwrap_or(PreconditionerConfig::Schwarz(
+        crate::config::Schwarz::default(),
+    ))
+}
+
+/// PROTOTYPE(#607): `PROBE_TEST_CONFIG=diagonal|adaptive` runs the alias and near-combination
+/// tests on that config instead.
+fn probe_config() -> Option<PreconditionerConfig> {
+    match std::env::var("PROBE_TEST_CONFIG").as_deref() {
+        Ok("diagonal") => Some(PreconditionerConfig::Diagonal),
+        Ok("adaptive") => Some(PreconditionerConfig::default()),
+        _ => None,
+    }
 }
 
 fn solve_tight(solver: &Solver<'_>, y: &[f64]) -> crate::SolveResult {
@@ -386,7 +398,7 @@ fn walsh_columns() -> ([f64; 8], [f64; 8], [f64; 8]) {
 
 /// Share of `y` left after residualizing on `effects` under the default preconditioner.
 fn residual_share(effects: Vec<Effect<'_>>, y: &[f64]) -> f64 {
-    let solver = Solver::new(effects, None, None).expect("solver");
+    let solver = Solver::new(effects, None, probe_config().unwrap_or_default()).expect("solver");
     let out = solve_tight(&solver, y);
     let energy = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>();
     energy(&out.demeaned) / energy(y)

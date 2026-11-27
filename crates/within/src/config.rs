@@ -283,9 +283,17 @@ pub(crate) mod probe {
         Fixed,
     }
 
+    /// The bottom rung: today's diagonal, or block Jacobi on `S`'s level blocks.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Bottom {
+        Diagonal,
+        Block,
+    }
+
     #[derive(Debug)]
     pub(crate) struct Knobs {
         pub(crate) coarse: Coarse,
+        pub(crate) bottom: Bottom,
         pub(crate) stall1: Option<Staleness>,
         pub(crate) stall2: Option<Staleness>,
     }
@@ -314,6 +322,11 @@ pub(crate) mod probe {
                 Ok("climb") => Coarse::Climb,
                 Ok("fixed") => Coarse::Fixed,
                 Ok(other) => panic!("PROBE_COARSE={other}: want climb or fixed"),
+            },
+            bottom: match std::env::var("PROBE_BOTTOM").as_deref() {
+                Err(_) | Ok("") | Ok("diagonal") => Bottom::Diagonal,
+                Ok("block") => Bottom::Block,
+                Ok(other) => panic!("PROBE_BOTTOM={other}: want block"),
             },
             stall1: stall("PROBE_STALL1"),
             stall2: stall("PROBE_STALL2"),

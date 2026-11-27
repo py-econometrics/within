@@ -365,6 +365,110 @@ impl<T: KeptTerms, R: TermRow, W: RowScale> SplitRows<'_, T, R, W> {
         };
         (self.segments).sum(out, 3 * n, MemStack::new(&mut buffer), &level);
     }
+
+    /// PROTOTYPE(#607): `S`'s within-level cross entries, `out[j · width + q_k] = S_jk` for kept
+    /// unknowns `j ≠ k` of the same term and level, `block[j] = (term, column)`. Each level of `e`
+    /// adds `a_jᵀa_k − Σ_c (a_cᵀa_j) g_c (a_cᵀa_k)` where both columns pass the slack
+    /// [`column_energies`](Self::column_energies) applies, so the diagonal it keeps matches.
+    pub(super) fn level_cross(
+        &self,
+        block: &[(u32, u32)],
+        width: usize,
+        out: &mut [f64],
+        slack: &(impl Fn(usize, f64) -> f64 + Sync),
+    ) {
+        let n = block.len();
+        let np = n * width;
+        let len = 3 * n + 2 * np;
+        let mut buffer = MemBuffer::new(self.segments.sum_scratch(np, len));
+        let level = |level: usize, rows: Range<usize>, acc: &mut [f64], scratch: &mut [f64]| {
+            let (cross, rest) = scratch.split_at_mut(n);
+            let (own, rest) = rest.split_at_mut(n);
+            let (absorbed, rest) = rest.split_at_mut(n);
+            let (own_off, absorbed_off) = rest.split_at_mut(np);
+            let mut group: Vec<(usize, f64)> = Vec::with_capacity(16);
+            let mut pass: Vec<bool> = Vec::with_capacity(16);
+            let pairs = |group: &[(usize, f64)], f: &mut dyn FnMut(usize, usize, usize)| {
+                for_pairs(block, width, group, f)
+            };
+            for i in rows.clone() {
+                group.clear();
+                self.slots(i, |j, d| group.push((j, d)));
+                for &(j, d) in &group {
+                    own[j] += d * d;
+                }
+                pairs(&group, &mut |a, b, at| {
+                    own_off[at] += group[a].1 * group[b].1
+                });
+            }
+            for (c, &g) in self.inverse(level).iter().enumerate() {
+                if g == 0.0 {
+                    continue;
+                }
+                for i in rows.clone() {
+                    let mut a = 0.0;
+                    self.row(i, |cc, v| {
+                        if cc == c {
+                            a = v;
+                        }
+                    });
+                    self.slots(i, |j, d| cross[j] += a * d);
+                }
+                for i in rows.clone() {
+                    group.clear();
+                    self.slots(i, |j, d| group.push((j, d)));
+                    for &(j, _) in &group {
+                        absorbed[j] += cross[j] * g * cross[j];
+                    }
+                    let cross_ref = &*cross;
+                    pairs(&group, &mut |a, b, at| {
+                        absorbed_off[at] += cross_ref[group[a].0] * g * cross_ref[group[b].0]
+                    });
+                    for &(j, _) in &group {
+                        cross[j] = 0.0;
+                    }
+                }
+            }
+            for i in rows.clone() {
+                group.clear();
+                self.slots(i, |j, d| group.push((j, d)));
+                pass.clear();
+                pass.extend(
+                    group
+                        .iter()
+                        .map(|&(j, _)| own[j] - absorbed[j] > slack(rows.len(), own[j])),
+                );
+                pairs(&group, &mut |a, b, at| {
+                    if pass[a] && pass[b] {
+                        acc[at] += own_off[at] - absorbed_off[at];
+                    }
+                    (own_off[at], absorbed_off[at]) = (0.0, 0.0);
+                });
+                for &(j, _) in &group {
+                    (own[j], absorbed[j]) = (0.0, 0.0);
+                }
+            }
+        };
+        (self.segments).sum(out, len, MemStack::new(&mut buffer), &level);
+    }
+}
+
+/// PROTOTYPE(#607): `f(a, b, j · width + q_k)` for each ordered pair `a ≠ b` of one row's slots
+/// `group` in the same term, hence the same level.
+#[inline(always)]
+fn for_pairs(
+    block: &[(u32, u32)],
+    width: usize,
+    group: &[(usize, f64)],
+    f: &mut dyn FnMut(usize, usize, usize),
+) {
+    for (a, &(j, _)) in group.iter().enumerate() {
+        for (b, &(k, _)) in group.iter().enumerate() {
+            if a != b && block[j].0 == block[k].0 {
+                f(a, b, j * width + block[k].1 as usize);
+            }
+        }
+    }
 }
 
 /// [`SplitRows::map_projected`]'s pass.

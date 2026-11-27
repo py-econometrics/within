@@ -16,7 +16,7 @@ mod weights;
 
 pub(crate) use coarse::CoarseSolve;
 use gramian::SchurDiagonal;
-pub(crate) use gramian::{Gramian, PairBlock};
+pub(crate) use gramian::{Gramian, PairBlock, TermLevelBlocks};
 use operator::Absorbed;
 pub(crate) use operator::SystemMatrix;
 pub(crate) use response::{Fit, Response};

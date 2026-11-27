@@ -162,6 +162,74 @@ impl<'p> Gramian<'p> {
     }
 }
 
+/// PROTOTYPE(#607): one kept term's level blocks of `S`: `width × width` per level, level-major,
+/// row-major within, over the unknowns `start + c · n_levels + level`.
+pub(crate) struct TermLevelBlocks {
+    pub(crate) start: usize,
+    pub(crate) n_levels: usize,
+    pub(crate) width: usize,
+    pub(crate) blocks: Vec<f64>,
+}
+
+impl Gramian<'_> {
+    /// PROTOTYPE(#607): `S`'s level blocks, one per kept term and level: `diag(S)` on the
+    /// diagonal, the within-level cross entries of `G_kk − G_ke G_ee⁺ G_ek` off it, gathered in a
+    /// second sweep over `e`'s segments with `diag(S)`'s slack.
+    pub(crate) fn level_blocks(&self) -> Vec<TermLevelBlocks> {
+        let split = &self.design.split;
+        let layout = split.layout();
+        let diag = self.design.diag_s.values();
+        let n = diag.len();
+        let blocks: Vec<(usize, std::ops::Range<usize>)> = split.unknowns().blocks().collect();
+        let width = (blocks.iter())
+            .map(|(t, _)| layout.term(*t).n_columns())
+            .max()
+            .unwrap_or(1);
+        let mut of = vec![(0u32, 0u32); n];
+        for (k, (t, range)) in blocks.iter().enumerate() {
+            let l = layout.term(*t).n_levels();
+            for j in range.clone() {
+                of[j] = (k as u32, ((j - range.start) / l) as u32);
+            }
+        }
+        let mut cross = vec![0.0; n * width];
+        if width > 1 {
+            // The same slack as `SchurDiagonal::of`.
+            let slack = |rows: usize, own: f64| rows as f64 * f64::EPSILON * own;
+            split.dynamic().level_cross(&of, width, &mut cross, &slack);
+        }
+        blocks
+            .iter()
+            .map(|(t, range)| {
+                let term = layout.term(*t);
+                let (l, p) = (term.n_levels(), term.n_columns());
+                let mut out = vec![0.0; l * p * p];
+                for level in 0..l {
+                    let block = &mut out[level * p * p..][..p * p];
+                    for q in 0..p {
+                        let j = range.start + q * l + level;
+                        for r in 0..p {
+                            block[q * p + r] = if q == r {
+                                diag[j]
+                            } else {
+                                // Symmetrize the two gathered halves.
+                                let k = range.start + r * l + level;
+                                0.5 * (cross[j * width + r] + cross[k * width + q])
+                            };
+                        }
+                    }
+                }
+                TermLevelBlocks {
+                    start: range.start,
+                    n_levels: l,
+                    width: p,
+                    blocks: out,
+                }
+            })
+            .collect()
+    }
+}
+
 /// `diag(S) = diag(A_rᵀA_r)` per unknown, 0 on a column the elimination absorbs, and a floor under
 /// `‖A_r‖₂` that survives the cancellation in it.
 pub(super) struct SchurDiagonal {

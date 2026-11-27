@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::{PreconditionerConfig, Rung};
+use crate::config::{probe, PreconditionerConfig, Rung};
 use crate::system::Gramian;
 use crate::{BuildError, BuildWarning};
 use schwarz::FeSchwarz;
 
+mod block_diagonal;
 mod ladder;
 mod schwarz;
 mod two_level;
@@ -86,6 +87,8 @@ enum Map {
     Schwarz(FeSchwarz),
     /// PROTOTYPE(#607): Schwarz with the rigid coarse correction; never persisted.
     TwoLevel(two_level::TwoLevelMap),
+    /// PROTOTYPE(#607): block Jacobi on `S`'s level blocks, under `PROBE_BOTTOM=block`.
+    BlockDiagonal(block_diagonal::BlockDiagonalPreconditioner),
 }
 
 impl Rung<'_> {
@@ -100,7 +103,7 @@ impl Rung<'_> {
     fn builds(&self, map: &Map) -> bool {
         matches!(
             (self, map),
-            (Self::Diagonal, Map::Diagonal(_))
+            (Self::Diagonal, Map::Diagonal(_) | Map::BlockDiagonal(_))
                 | (Self::Schwarz(_), Map::Schwarz(_))
                 | (Self::Coarse(_), Map::TwoLevel(_) | Map::Schwarz(_))
         )
@@ -118,6 +121,10 @@ impl Rung<'_> {
         below: Option<&Map>,
     ) -> Result<(Option<Map>, Vec<BuildWarning>), BuildError> {
         Ok(match self {
+            Self::Diagonal if probe::knobs().bottom == probe::Bottom::Block => (
+                Some(Map::BlockDiagonal(block_diagonal::build(gramian)?)),
+                Vec::new(),
+            ),
             Self::Diagonal => (Some(Map::Diagonal(diagonal_map(gramian)?)), Vec::new()),
             Self::Schwarz(schwarz) => {
                 let (schwarz, warnings) = schwarz::build(gramian, &schwarz.local_solver)?;
@@ -152,6 +159,7 @@ impl Map {
             Self::Diagonal(p) => p,
             Self::Schwarz(p) => p.operator(),
             Self::TwoLevel(p) => p,
+            Self::BlockDiagonal(p) => p,
         }
     }
 }
@@ -197,6 +205,7 @@ impl Preconditioner {
             Map::Diagonal(_) => "Diagonal",
             Map::Schwarz(_) => "Additive",
             Map::TwoLevel(_) => "TwoLevel",
+            Map::BlockDiagonal(_) => "BlockDiagonal",
         }
     }
 
