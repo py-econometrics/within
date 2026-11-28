@@ -302,9 +302,111 @@ impl<'a> Solver<'a> {
         let gramian = Gramian::new(&self.design);
         // Read once: a column must not start on a rung a sibling built during this call.
         let start = self.ladder.current()?;
+        if let Some(k) = recycle_count().filter(|_| ys.len() > 1) {
+            return self.solve_recycled(gramian, start, ys, lsmr, k);
+        }
         ys.par_iter()
             .map(|&y| self.climb(gramian, start, y, lsmr))
             .collect()
+    }
+
+    /// PROTOTYPE(#612): the first RHS climbs alone with its Krylov basis recorded; the rest run on
+    /// the rung it ended on, deflated by its `k` Ritz vectors of least Ritz value.
+    fn solve_recycled(
+        &self,
+        gramian: Gramian<'_>,
+        start: Current<'_>,
+        ys: &[&[f64]],
+        lsmr: &LsmrOptions,
+        k: usize,
+    ) -> Result<Vec<RhsSolution>, WithinError> {
+        use schwarz_precond::Operator as _;
+        schwarz_precond::recycle::arm();
+        let first = self.climb(gramian, start, ys[0], lsmr);
+        let passes = schwarz_precond::recycle::take();
+        let first = first?;
+        let started = Instant::now();
+        let top = self.ladder.current()?;
+        let n = self.design.unknowns().len();
+        let w = ritz_vectors(passes, k, n);
+        let a = SystemMatrix::new(&self.design);
+        let mut buf = schwarz_precond::MemBuffer::new(a.scratch());
+        let mut obs = vec![0.0; self.design.n_obs()];
+        let sw: Vec<Vec<f64>> = (w.iter())
+            .map(|col| {
+                let mut out = vec![0.0; n];
+                a.apply_with(col, &mut obs, schwarz_precond::MemStack::new(&mut buf))
+                    .expect("S applies");
+                a.apply_adjoint_with(&obs, &mut out, schwarz_precond::MemStack::new(&mut buf))
+                    .expect("S applies");
+                out
+            })
+            .collect();
+        let coarse = crate::system::CoarseSolve::from_dense(n, &w, &sw);
+        let build = started.elapsed().as_secs_f64();
+        if std::env::var_os("PROBE_TRACE").is_some() {
+            eprintln!(
+                "[probe-recycle] k={} built={} secs={build:.3}",
+                w.len(),
+                coarse.is_ok()
+            );
+        }
+        let Ok(coarse) = coarse else {
+            let rest: Result<Vec<RhsSolution>, WithinError> = (ys[1..].par_iter())
+                .map(|&y| self.climb(gramian, start, y, lsmr))
+                .collect();
+            return Ok(std::iter::once(first).chain(rest?).collect());
+        };
+        let identity = schwarz_precond::IdentityOp { n };
+        let inner: &dyn schwarz_precond::Operator = match top.map() {
+            Some(map) => map,
+            None => &identity,
+        };
+        let deflated = crate::precond::Deflated {
+            inner,
+            coarse: &coarse,
+        };
+        let rest: Result<Vec<RhsSolution>, WithinError> = (ys[1..].par_iter())
+            .map(|&y| {
+                let started = Instant::now();
+                let rhs = self.design.response(y)?;
+                let prepare = started.elapsed().as_secs_f64();
+                let started = Instant::now();
+                let options = schwarz_precond::MlsmrOptions {
+                    escalation: None,
+                    local_size: lsmr.local_size,
+                };
+                let result = schwarz_precond::mlsmr(
+                    &a,
+                    rhs.rhs(),
+                    &deflated,
+                    lsmr.tol,
+                    lsmr.maxiter,
+                    None,
+                    options,
+                )?;
+                let converged = result.converged();
+                let iterations = result.iterations;
+                let LsmrResult {
+                    x,
+                    true_residual,
+                    normal_eq_residual,
+                    ..
+                } = result;
+                Ok(RhsSolution {
+                    fit: rhs.fit(x, true_residual),
+                    converged,
+                    iterations,
+                    residual: normal_eq_residual,
+                    seconds: Seconds {
+                        prepare,
+                        build: build / (ys.len() - 1) as f64,
+                        lsmr: started.elapsed().as_secs_f64(),
+                    },
+                })
+            })
+            .collect();
+        Ok(std::iter::once(first).chain(rest?).collect())
     }
 
     /// Construct a solver.
@@ -513,4 +615,63 @@ pub fn solve_batch<'a, 'o>(
     result.time_setup += time_setup;
     result.time_total = t_start.elapsed().as_secs_f64();
     Ok(result)
+}
+
+/// PROTOTYPE(#612): `PROBE_RECYCLE=k` deflates a batch's later solves by the first one's `k`
+/// Ritz vectors.
+fn recycle_count() -> Option<usize> {
+    std::env::var("PROBE_RECYCLE")
+        .ok()?
+        .parse()
+        .ok()
+        .filter(|&k| k > 0)
+}
+
+/// The `k` Ritz vectors of least Ritz value from the longest recorded pass: `V_K q` for the right
+/// singular vectors `q` of its `(K+1) × K` lower bidiagonal `B_K`.
+fn ritz_vectors(passes: Vec<schwarz_precond::recycle::Pass>, k: usize, n: usize) -> Vec<Vec<f64>> {
+    let Some(pass) = passes.into_iter().max_by_key(|p| p.alphas.len()) else {
+        return Vec::new();
+    };
+    let steps = pass.alphas.len() - 1;
+    if steps < 2 {
+        return Vec::new();
+    }
+    let b = faer::Mat::from_fn(steps + 1, steps, |i, j| {
+        if i == j {
+            pass.alphas[j]
+        } else if i == j + 1 {
+            pass.betas[j + 1]
+        } else {
+            0.0
+        }
+    });
+    let Ok(svd) = b.thin_svd() else {
+        return Vec::new();
+    };
+    let s = svd.S().column_vector();
+    let v = svd.V();
+    let mut order: Vec<usize> = (0..steps).collect();
+    order.sort_by(|&a, &b| s[a].total_cmp(&s[b]));
+    if std::env::var_os("PROBE_TRACE").is_some() {
+        let least: Vec<String> = order
+            .iter()
+            .take(k)
+            .map(|&i| format!("{:.2e}", s[i] * s[i]))
+            .collect();
+        eprintln!(
+            "[probe-recycle] steps={steps} least ritz={}",
+            least.join(",")
+        );
+    }
+    (order.into_iter().take(k.min(steps)))
+        .map(|i| {
+            let mut w = vec![0.0; n];
+            for (j, vj) in pass.vs.iter().take(steps).enumerate() {
+                let q = v[(j, i)];
+                w.iter_mut().zip(vj).for_each(|(w, x)| *w += q * x);
+            }
+            w
+        })
+        .collect()
 }

@@ -115,3 +115,51 @@ impl Operator for TwoLevelMap {
         self.apply_with(x, y, stack)
     }
 }
+
+/// PROTOTYPE(#612): any map `inner` deflated by a coarse solve: `PᵀMP + Q`, as [`TwoLevelMap`].
+pub(crate) struct Deflated<'a> {
+    pub(crate) inner: &'a dyn Operator,
+    pub(crate) coarse: &'a CoarseSolve,
+}
+
+impl Operator for Deflated<'_> {
+    fn nrows(&self) -> usize {
+        self.inner.nrows()
+    }
+
+    fn ncols(&self) -> usize {
+        self.inner.ncols()
+    }
+
+    fn scratch(&self) -> StackReq {
+        self.inner.scratch()
+    }
+
+    fn apply_with(&self, x: &[f64], y: &mut [f64], stack: &mut MemStack) -> Result<(), SolveError> {
+        let coarse = self.coarse;
+        let m = coarse.n_columns();
+        let mut c = vec![0.0; m];
+        coarse.z_t_mul(x, &mut c);
+        coarse.solve(&mut c);
+        let mut t = x.to_vec();
+        coarse.sub_sz(&c, &mut t);
+        self.inner.apply_with(&t, y, stack)?;
+        let mut d = vec![0.0; m];
+        coarse.sz_t_mul(y, &mut d);
+        coarse.solve(&mut d);
+        for (c, d) in c.iter_mut().zip(&d) {
+            *c -= d;
+        }
+        coarse.add_z(&c, y);
+        Ok(())
+    }
+
+    fn apply_adjoint_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), SolveError> {
+        self.apply_with(x, y, stack)
+    }
+}

@@ -69,6 +69,41 @@ impl std::fmt::Debug for CoarseSolve {
 }
 
 impl CoarseSolve {
+    /// PROTOTYPE(#612): the coarse solve over dense columns `w`, `SW` given; declines when `E`
+    /// has no live pivot.
+    #[allow(clippy::needless_range_loop)]
+    pub(crate) fn from_dense(
+        n: usize,
+        w: &[Vec<f64>],
+        sw: &[Vec<f64>],
+    ) -> Result<Self, CoarseDecline> {
+        let k = w.len();
+        let dense = |cols: &[Vec<f64>]| {
+            let parts = vec![(cols.iter().enumerate())
+                .flat_map(|(c, col)| {
+                    (col.iter().enumerate())
+                        .filter(|e| *e.1 != 0.0)
+                        .map(move |(r, &v)| (c as u32, r as u32, v))
+                })
+                .collect::<Vec<_>>()];
+            TwoWay::from_parts(n, k, parts)
+        };
+        let mut lower = Vec::new();
+        for c in 0..k {
+            for i in c..k {
+                let v: f64 = w[i].iter().zip(&sw[c]).map(|(a, b)| a * b).sum();
+                lower.push((c as u32, i as u32, v));
+            }
+        }
+        let factor = CoarseFactor::new(k, lower, None, usize::MAX)?;
+        Ok(Self {
+            z: dense(w),
+            sz: dense(sw),
+            hubs: None,
+            factor,
+        })
+    }
+
     /// Number of coarse columns.
     pub(crate) fn n_columns(&self) -> usize {
         self.z.ncols()

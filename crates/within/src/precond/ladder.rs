@@ -36,7 +36,12 @@ pub(crate) struct Current<'l> {
     stall: Option<&'l Staleness>,
 }
 
-impl Current<'_> {
+impl<'l> Current<'l> {
+    /// PROTOTYPE(#612): this rung's map, if it has one.
+    pub(crate) fn map(&self) -> Option<&'l Preconditioner> {
+        self.top.map(|(_, map)| map)
+    }
+
     /// LSMR on `a` from `start` within what `spent` leaves of `lsmr.maxiter`, on this rung's map
     /// (`I` without one), handing off on its stall.
     pub(crate) fn run(

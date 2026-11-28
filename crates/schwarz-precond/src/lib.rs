@@ -113,6 +113,7 @@ pub use dyn_stack::{MemBuffer, MemStack, StackReq};
 pub use error::{BuildError, LocalSolveError, SolveError};
 pub use inflight::parallel::Threads;
 pub use local_solve::{LocalSolver, SubdomainEntry};
+pub use lsmr::recycle;
 pub use lsmr::{
     mlsmr, EscalationHandler, EscalationPolicy, IdentityOp, LsmrResult, LsmrStopReason,
     MlsmrOptions, Progress, Staleness, StalenessError,

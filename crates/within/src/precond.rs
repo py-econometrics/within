@@ -16,6 +16,7 @@ mod schwarz;
 mod two_level;
 
 pub(crate) use ladder::{Current, Ladder};
+pub(crate) use two_level::Deflated;
 
 /// Jacobi preconditioner on `diag(S)`.
 #[derive(Clone, Debug, Serialize, Deserialize)]

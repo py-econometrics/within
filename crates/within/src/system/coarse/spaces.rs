@@ -1,8 +1,10 @@
-#![allow(clippy::needless_range_loop)] // PROTOTYPE(#612)
+#![allow(clippy::needless_range_loop, clippy::type_complexity)] // PROTOTYPE(#612)
 //! PROTOTYPE(#612): coarse spaces on the assembled `S`, chosen by `PROBE_SPACE`.
 
 use super::assembled::AssembledS;
-use super::assembled::{coarse_from_columns, dense_columns, lower_triplets, small_unknowns};
+use super::assembled::{
+    coarse_from_columns, dense_columns, lower_triplets, small_unknowns, LevelGrams,
+};
 use super::rigid::{AnchorGauges, SmallColumns};
 use super::{CoarseDecline, CoarseSolve};
 use crate::system::ReducedDesign;
@@ -28,6 +30,9 @@ pub(crate) enum Space {
     /// Unsmoothed aggregation through the rigid lift: aggregates of anchor levels by the
     /// intercept channel's connection strength in `S`, the year-like small terms as columns.
     Aggregates,
+    /// Algebraic GenEO on aggregates: each aggregate's eigenvectors of the pencil
+    /// `(Σ_g Schur(S_g → aggregate), S_aggregate)` below `τ`, the small terms as columns.
+    Geneo,
 }
 
 pub(crate) fn space() -> Space {
@@ -41,6 +46,7 @@ pub(crate) fn space() -> Space {
         Ok("rigid-small") => Space::RigidSmall,
         Ok("sa") => Space::Sa,
         Ok("agg") => Space::Aggregates,
+        Ok("geneo") => Space::Geneo,
         Ok(other) => panic!("PROBE_SPACE={other}"),
     })
 }
@@ -83,6 +89,7 @@ pub(super) fn build(
         }
         Space::Components => components(&s, design)?,
         Space::Sa => smoothed_aggregation(&s, design)?,
+        Space::Geneo => geneo(&s, design)?,
         Space::RigidAssembled | Space::RigidSmall => {
             let rigid = super::rigid::build(&design.split)?;
             let mut columns = rigid.z_columns();
@@ -537,4 +544,210 @@ fn connected(graph: &[Vec<(u32, f64)>]) -> Vec<Vec<u32>> {
         groups[number[r] as usize].push(l as u32);
     }
     groups
+}
+
+/// `M⁺` of a symmetric `t × t` row-major `m`, eigenvalues below `1e-12` of the largest dropped.
+fn pseudo_inverse(m: &[f64], t: usize) -> Vec<f64> {
+    let mat = faer::Mat::from_fn(t, t, |i, j| m[i * t + j]);
+    let Ok(eig) = mat.self_adjoint_eigen(faer::Side::Lower) else {
+        return vec![0.0; t * t];
+    };
+    let (u, lam) = (eig.U(), eig.S().column_vector());
+    let top = (0..t).map(|i| lam[i].abs()).fold(0.0, f64::max);
+    let mut out = vec![0.0; t * t];
+    for k in 0..t {
+        if lam[k] > 1e-12 * top {
+            let inv = 1.0 / lam[k];
+            for i in 0..t {
+                for j in 0..t {
+                    out[i * t + j] += u[(i, k)] * inv * u[(j, k)];
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Algebraic GenEO (Al Daas, Jolivet, Scott 2022, for normal equations), each eliminated level a
+/// term of the splitting `S = Σ_g S_g`: per aggregate `Ω` (Frobenius strength `PROBE_GENEO_THETA`,
+/// default 0.04), `N = Σ_{g touching Ω} Schur(S_g → Ω)` against `A = S_ΩΩ`; the eigenvectors of
+/// `N u = λ A u` with `λ < τ` (`PROBE_GENEO_TAU`, default 0.1), at most `PROBE_GENEO_MAX` (8) per
+/// aggregate, as columns, and the small terms' unknowns.
+fn geneo(
+    s: &AssembledS,
+    design: &ReducedDesign<'_>,
+) -> Result<Vec<Vec<(u32, f64)>>, CoarseDecline> {
+    use rayon::prelude::*;
+    let started = std::time::Instant::now();
+    let anchor = AnchorGauges::of(&design.split).ok_or(CoarseDecline::NoCoarseSpace)?;
+    let nodes = Nodes { s, anchor };
+    let theta = knob("PROBE_GENEO_THETA", 0.04);
+    let tau = knob("PROBE_GENEO_TAU", 0.1);
+    let kmax = knob("PROBE_GENEO_MAX", 8.0) as usize;
+    let graph = nodes.graph();
+    let strong: Vec<Vec<(u32, f64)>> = (graph.into_iter())
+        .map(|nb| nb.into_iter().filter(|&(_, w)| w >= theta).collect())
+        .collect();
+    let groups = aggregate(&strong);
+    drop(strong);
+    let nl = nodes.anchor.n_levels;
+    let mut of_level = vec![u32::MAX; nl];
+    for (k, g) in groups.iter().enumerate() {
+        for &l in g {
+            of_level[l as usize] = k as u32;
+        }
+    }
+    let group_of = |u: usize| -> Option<u32> { nodes.level(u).map(|l| of_level[l]) };
+    let large = |u: usize| !s.is_small(u) && s.diag[u] != 0.0;
+    let levels = LevelGrams::new(design);
+    // Each level's `Schur(S_g → Ω ∩ supp)` for each aggregate `Ω` it touches.
+    let mut parts: Vec<(u32, u32, u32, f64)> = (0..levels.n_levels())
+        .into_par_iter()
+        .flat_map_iter(|g| {
+            let (cols, gram) = levels.gram(g, &large);
+            let t = cols.len();
+            let mut out = Vec::new();
+            let mut touched: Vec<u32> = cols.iter().filter_map(|&u| group_of(u as usize)).collect();
+            touched.sort_unstable();
+            touched.dedup();
+            for &k in &touched {
+                let inside: Vec<usize> = (0..t)
+                    .filter(|&i| group_of(cols[i] as usize) == Some(k))
+                    .collect();
+                let outside: Vec<usize> = (0..t)
+                    .filter(|&i| group_of(cols[i] as usize) != Some(k))
+                    .collect();
+                let (ni, no) = (inside.len(), outside.len());
+                let mut schur: Vec<f64> = (0..ni * ni)
+                    .map(|x| gram[inside[x / ni] * t + inside[x % ni]])
+                    .collect();
+                if no > 0 {
+                    let jj: Vec<f64> = (0..no * no)
+                        .map(|x| gram[outside[x / no] * t + outside[x % no]])
+                        .collect();
+                    let pinv = pseudo_inverse(&jj, no);
+                    for a in 0..ni {
+                        for b in 0..ni {
+                            let mut acc = 0.0;
+                            for x in 0..no {
+                                let sax = gram[inside[a] * t + outside[x]];
+                                if sax == 0.0 {
+                                    continue;
+                                }
+                                for y in 0..no {
+                                    acc +=
+                                        sax * pinv[x * no + y] * gram[outside[y] * t + inside[b]];
+                                }
+                            }
+                            schur[a * ni + b] -= acc;
+                        }
+                    }
+                }
+                for a in 0..ni {
+                    for b in 0..ni {
+                        out.push((k, cols[inside[a]], cols[inside[b]], schur[a * ni + b]));
+                    }
+                }
+            }
+            out
+        })
+        .collect();
+    parts.par_sort_by_key(|e| (e.0, e.1, e.2));
+    let by_group: Vec<&[(u32, u32, u32, f64)]> = {
+        let mut v = Vec::with_capacity(groups.len());
+        let mut start = 0;
+        for k in 0..groups.len() as u32 {
+            let end = start + parts[start..].partition_point(|e| e.0 == k);
+            v.push(&parts[start..end]);
+            start = end;
+        }
+        v
+    };
+    let counts: Vec<(usize, Vec<Vec<(u32, f64)>>)> = (0..groups.len())
+        .into_par_iter()
+        .map(|k| {
+            let mut omega: Vec<u32> = Vec::new();
+            for &l in &groups[k] {
+                for q in 0..nodes.anchor.p {
+                    let u = nodes.anchor.unknown(q, l as usize);
+                    if large(u) {
+                        omega.push(u as u32);
+                    }
+                }
+            }
+            omega.sort_unstable();
+            let m = omega.len();
+            if m == 0 {
+                return (0, Vec::new());
+            }
+            let index = |u: u32| omega.binary_search(&u).ok();
+            let mut nmat = vec![0.0; m * m];
+            for &(_, a, b, v) in by_group[k] {
+                if let (Some(i), Some(j)) = (index(a), index(b)) {
+                    nmat[i * m + j] += v;
+                }
+            }
+            let mut amat = vec![0.0; m * m];
+            for (i, &u) in omega.iter().enumerate() {
+                let u = u as usize;
+                for q in s.row_ptr[u]..s.row_ptr[u + 1] {
+                    if let Some(j) = index(s.col_idx[q]) {
+                        amat[i * m + j] = s.val[q];
+                    }
+                }
+            }
+            // A^{-1/2} N A^{-1/2}, A's nulls dropped.
+            let a = faer::Mat::from_fn(m, m, |i, j| amat[i * m + j]);
+            let Ok(ea) = a.self_adjoint_eigen(faer::Side::Lower) else {
+                return (0, Vec::new());
+            };
+            let (ua, la) = (ea.U(), ea.S().column_vector());
+            let top = (0..m).map(|i| la[i]).fold(0.0, f64::max);
+            let keep: Vec<usize> = (0..m).filter(|&i| la[i] > 1e-12 * top).collect();
+            let r = keep.len();
+            let half = faer::Mat::from_fn(m, r, |i, c| ua[(i, keep[c])] / la[keep[c]].sqrt());
+            let nm = faer::Mat::from_fn(m, m, |i, j| nmat[i * m + j]);
+            let reduced = half.transpose() * &nm * &half;
+            let sym = faer::Mat::from_fn(r, r, |i, j| 0.5 * (reduced[(i, j)] + reduced[(j, i)]));
+            let Ok(en) = sym.self_adjoint_eigen(faer::Side::Lower) else {
+                return (0, Vec::new());
+            };
+            let (un, ln) = (en.U(), en.S().column_vector());
+            let mut cols = Vec::new();
+            for c in 0..r.min(kmax) {
+                if ln[c] >= tau {
+                    break;
+                }
+                let y = un.col(c);
+                let u = &half * y;
+                let norm = (0..m).map(|i| u[i] * u[i]).sum::<f64>().sqrt();
+                if norm > 0.0 {
+                    cols.push(
+                        (0..m)
+                            .map(|i| (omega[i], u[i] / norm))
+                            .filter(|e| e.1 != 0.0)
+                            .collect(),
+                    );
+                }
+            }
+            (cols.len(), cols)
+        })
+        .collect();
+    let per: Vec<usize> = counts.iter().map(|c| c.0).collect();
+    let mut columns: Vec<Vec<(u32, f64)>> = counts.into_iter().flat_map(|c| c.1).collect();
+    if std::env::var_os("PROBE_COARSE").is_some() {
+        let mut hist = [0usize; 10];
+        for &c in &per {
+            hist[c.min(9)] += 1;
+        }
+        eprintln!(
+            "[probe-space] geneo theta={theta} tau={tau} aggregates={} max_size={} columns={} per-aggregate histogram={hist:?} secs={:.3}",
+            groups.len(),
+            groups.iter().map(Vec::len).max().unwrap_or(0),
+            columns.len(),
+            started.elapsed().as_secs_f64()
+        );
+    }
+    columns.extend(s.small.iter().map(|&u| vec![(u, 1.0)]));
+    Ok(columns)
 }

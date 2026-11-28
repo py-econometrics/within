@@ -270,6 +270,7 @@ pub fn mlsmr<A: Operator + ?Sized, M: Operator + ?Sized>(
     options: MlsmrOptions<'_>,
 ) -> Result<LsmrResult, SolveError> {
     validate_lsmr_inputs(operator, b, tol)?;
+    recycle::run_start();
     let n = operator.ncols();
     if preconditioner.nrows() != n || preconditioner.ncols() != n {
         return Err(invalid_input(format!(
@@ -485,6 +486,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 step1.alpha, step1.beta
             );
         }
+        recycle::pass_start(step1.alpha, step1.beta, bidiag.v());
         let mut convergence = criteria.start(step1.alpha);
         let mut recurrence = LsmrRecurrenceState::init(step1);
         let mut solution = SolutionState::init(bidiag.v(), step1.beta);
@@ -507,6 +509,7 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
                 if ritz_trace() {
                     eprintln!("[ritz] a={:e} b={:e}", step.alpha, step.beta);
                 }
+                recycle::step(step.alpha, step.beta, bidiag.v());
                 convergence.observe(step);
                 let curr_rot = recurrence.step(step);
                 solution.update(bidiag.v(), curr_rot, prev_rot);
@@ -703,4 +706,63 @@ fn invalid_input(message: String) -> SolveError {
 fn ritz_trace() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("PROBE_RITZ").is_some())
+}
+
+/// PROTOTYPE(#612): records each pass's `(α, β)` and its `v` basis while armed, for Ritz vectors
+/// of the preconditioned operator: `V` is `M`-orthonormal and `V_kᵀ AᵀA V_k = B_kᵀB_k`.
+pub mod recycle {
+    use std::sync::Mutex;
+
+    /// One pass: `α₁…`, `β₁…` and `v₁…`, step for step.
+    #[derive(Default)]
+    pub struct Pass {
+        /// `α₁, α₂, …`.
+        pub alphas: Vec<f64>,
+        /// `β₁, β₂, …`.
+        pub betas: Vec<f64>,
+        /// `v₁, v₂, …`.
+        pub vs: Vec<Vec<f64>>,
+    }
+
+    static ARMED: Mutex<Option<Vec<Pass>>> = Mutex::new(None);
+
+    /// Starts recording, dropping whatever was recorded.
+    pub fn arm() {
+        *ARMED.lock().expect("recorder") = Some(Vec::new());
+    }
+
+    /// Stops recording; the passes recorded since [`arm`] or the last run start.
+    pub fn take() -> Vec<Pass> {
+        ARMED.lock().expect("recorder").take().unwrap_or_default()
+    }
+
+    /// A run starts: only its passes count.
+    pub(super) fn run_start() {
+        if let Some(passes) = ARMED.lock().expect("recorder").as_mut() {
+            passes.clear();
+        }
+    }
+
+    pub(super) fn pass_start(alpha: f64, beta: f64, v: &[f64]) {
+        if let Some(passes) = ARMED.lock().expect("recorder").as_mut() {
+            passes.push(Pass {
+                alphas: vec![alpha],
+                betas: vec![beta],
+                vs: vec![v.to_vec()],
+            });
+        }
+    }
+
+    pub(super) fn step(alpha: f64, beta: f64, v: &[f64]) {
+        if let Some(pass) = ARMED
+            .lock()
+            .expect("recorder")
+            .as_mut()
+            .and_then(|p| p.last_mut())
+        {
+            pass.alphas.push(alpha);
+            pass.betas.push(beta);
+            pass.vs.push(v.to_vec());
+        }
+    }
 }

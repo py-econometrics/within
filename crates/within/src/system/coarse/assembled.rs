@@ -199,18 +199,34 @@ pub(super) fn dense_columns(design: &ReducedDesign<'_>, small: &[u32]) -> Vec<f6
     dense
 }
 
-/// `S`'s lower triangle over the unknowns `keep` selects, `(column, row, value)` sorted, summed
-/// from each eliminated level's `S_g = Ã_gᵀÃ_g` in level order.
-pub(super) fn lower_triplets(
-    design: &ReducedDesign<'_>,
-    keep: impl Fn(usize) -> bool + Sync,
-) -> Vec<(u32, u32, f64)> {
-    let split = &design.split;
-    let rows = Rows::new(split);
-    let kept = DynamicKept::new(split);
-    let p = rows.width();
-    let inverse = &split.eliminated_inverse;
-    let level_lower = |g: usize| -> Vec<(u32, u32, f64)> {
+/// Each eliminated level's `S_g = Ã_gᵀÃ_g`, `Ã_g = (I − P_g) A_g` on the level's rows.
+pub(super) struct LevelGrams<'p> {
+    rows: Rows<'p>,
+    kept: DynamicKept<'p>,
+    p: usize,
+    inverse: &'p [f64],
+}
+
+impl<'p> LevelGrams<'p> {
+    pub(super) fn new(design: &'p ReducedDesign<'_>) -> Self {
+        let split = &design.split;
+        let rows = Rows::new(split);
+        Self {
+            p: rows.width(),
+            rows,
+            kept: DynamicKept::new(split),
+            inverse: &split.eliminated_inverse,
+        }
+    }
+
+    pub(super) fn n_levels(&self) -> usize {
+        self.rows.n_levels()
+    }
+
+    /// The unknowns `keep` selects that level `g` touches, ascending, and `S_g` over them,
+    /// row-major.
+    pub(super) fn gram(&self, g: usize, keep: &impl Fn(usize) -> bool) -> (Vec<u32>, Vec<f64>) {
+        let (rows, kept, p) = (&self.rows, &self.kept, self.p);
         let basis = rows.level(g);
         let mut cols: Vec<u32> = Vec::new();
         let mut n_rows = 0;
@@ -226,7 +242,7 @@ pub(super) fn lower_triplets(
         cols.dedup();
         let t = cols.len();
         if t == 0 {
-            return Vec::new();
+            return (cols, Vec::new());
         }
         let mut a = vec![0.0; n_rows * t];
         let mut e = vec![0.0; n_rows * p];
@@ -243,7 +259,7 @@ pub(super) fn lower_triplets(
             }
         }
         // Ã = (I − P_g) A: the level's columns are orthogonal, so one at a time.
-        let inv = &inverse[g * p..(g + 1) * p];
+        let inv = &self.inverse[g * p..(g + 1) * p];
         let mut coef = vec![0.0; t];
         for c in 0..p {
             if inv[c] == 0.0 {
@@ -264,10 +280,32 @@ pub(super) fn lower_triplets(
                 }
             }
         }
-        let mut lower = Vec::with_capacity(t * (t + 1) / 2);
+        let mut gram = vec![0.0; t * t];
         for i in 0..t {
             for j in 0..=i {
                 let v: f64 = (0..n_rows).map(|k| a[k * t + i] * a[k * t + j]).sum();
+                gram[i * t + j] = v;
+                gram[j * t + i] = v;
+            }
+        }
+        (cols, gram)
+    }
+}
+
+/// `S`'s lower triangle over the unknowns `keep` selects, `(column, row, value)` sorted, summed
+/// from each eliminated level's `S_g` in level order.
+pub(super) fn lower_triplets(
+    design: &ReducedDesign<'_>,
+    keep: impl Fn(usize) -> bool + Sync,
+) -> Vec<(u32, u32, f64)> {
+    let levels = LevelGrams::new(design);
+    let level_lower = |g: usize| -> Vec<(u32, u32, f64)> {
+        let (cols, gram) = levels.gram(g, &keep);
+        let t = cols.len();
+        let mut lower = Vec::with_capacity(t * (t + 1) / 2);
+        for i in 0..t {
+            for j in 0..=i {
+                let v = gram[i * t + j];
                 if v != 0.0 {
                     lower.push((cols[j], cols[i], v));
                 }
@@ -277,10 +315,11 @@ pub(super) fn lower_triplets(
     };
     // Levels in chunks, each chunk's triplets merged into the running sum: the triplets of every
     // level at once would hold `Σ_g t_g²/2` entries.
-    let chunk = (rows.n_levels() / 16).max(4096);
+    let n_levels = levels.n_levels();
+    let chunk = (n_levels / 16).max(4096);
     let mut lower: Vec<(u32, u32, f64)> = Vec::new();
-    for start in (0..rows.n_levels()).step_by(chunk) {
-        let end = (start + chunk).min(rows.n_levels());
+    for start in (0..n_levels).step_by(chunk) {
+        let end = (start + chunk).min(n_levels);
         let part: Vec<(u32, u32, f64)> = (start..end)
             .into_par_iter()
             .flat_map_iter(level_lower)
