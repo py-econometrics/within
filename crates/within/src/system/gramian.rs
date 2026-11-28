@@ -101,20 +101,34 @@ impl<'p> Gramian<'p> {
 
     /// The local operators: every pair of kept channels of different terms, then every kept
     /// channel with each of `e`'s. Same-term channels are orthogonal, so their block is 0.
+    #[allow(dead_code)] // PROTOTYPE(#614): the build reads `pair_blocks_in`
     pub(crate) fn pair_blocks(&self) -> Vec<PairBlock<'p>> {
+        self.pair_blocks_in(None, false)
+    }
+
+    /// PROTOTYPE(#614): the pair blocks with `raw`'s loadings in place of the orthogonal ones,
+    /// and with `same`, a block per pair of one kept term's intercept and slope.
+    pub(crate) fn pair_blocks_in<'r>(
+        &self,
+        raw: Option<&'r RawSlopes>,
+        same: bool,
+    ) -> Vec<PairBlock<'r>>
+    where
+        'p: 'r,
+    {
         let layout = self.design.layout();
         let channels: Vec<(Channel, Range<usize>)> =
             self.design.unknowns().channels(layout).collect();
         let mut blocks = Vec::new();
         for (i, (rows, at_rows)) in channels.iter().enumerate() {
             for (cols, at_cols) in &channels[i + 1..] {
-                if cols.term != rows.term {
+                if cols.term != rows.term || same {
                     let pair = ChannelPair {
                         rows: *rows,
                         cols: *cols,
                     };
                     let (rows, cols) = (at_rows.clone(), at_cols.clone());
-                    blocks.push(self.block(pair, BlockShape::Kept { rows, cols }));
+                    blocks.push(self.block(pair, BlockShape::Kept { rows, cols }, raw));
                 }
             }
         }
@@ -128,27 +142,113 @@ impl<'p> Gramian<'p> {
                     (ChannelPair { rows, cols }, Side::Left)
                 };
                 let kept = at.clone();
-                blocks.push(self.block(pair, BlockShape::Complement { kept, side }));
+                blocks.push(self.block(pair, BlockShape::Complement { kept, side }, raw));
             }
         }
         blocks
     }
 
+    /// PROTOTYPE(#614): each term's one slope in the caller's basis, `z − c` with `c` from
+    /// `PROBE_ORIGIN` (`zero`, `mean`, or a number), 0 on a level that drops it, read back
+    /// through the level's `u = f·z − s`; and per kept term with an intercept, the map
+    /// `M = [[1, f·c − s], [0, f]]` from solve to caller coefficients. Terms with more slopes, or
+    /// a slope and no intercept, keep the orthogonal basis.
+    pub(crate) fn raw_slopes(&self) -> RawSlopes {
+        let split = &self.design.split;
+        let layout = self.design.layout();
+        let channels: Vec<(Channel, Range<usize>)> =
+            self.design.unknowns().channels(layout).collect();
+        let origin = std::env::var("PROBE_ORIGIN").unwrap_or_default();
+        let mut loadings = Vec::new();
+        let mut maps = Vec::new();
+        for t in 0..layout.n_terms() {
+            let term = split.term(t);
+            let tl = term.layout();
+            if !(tl.intercept() && tl.n_slopes() == 1) {
+                loadings.push(None);
+                continue;
+            }
+            let slope = tl.slope_column(0);
+            let (u, levels) = (term.loading(slope).expect("a slope column"), term.levels());
+            let fs: Vec<(f64, f64)> = (0..tl.n_levels())
+                .map(|l| {
+                    let (f, s, _) = split.slopes[t].level_map(l);
+                    (f[0], s[0])
+                })
+                .collect();
+            let z = |i: usize| {
+                let (f, s) = fs[levels[i] as usize];
+                if f != 0.0 {
+                    (u[i] + s) / f
+                } else {
+                    f64::NAN
+                }
+            };
+            let c = match origin.as_str() {
+                "" | "zero" => 0.0,
+                "mean" => {
+                    let (sum, count) = (0..u.len())
+                        .map(z)
+                        .filter(|v| v.is_finite())
+                        .fold((0.0, 0usize), |(s, n), v| (s + v, n + 1));
+                    sum / count.max(1) as f64
+                }
+                other => other.parse().expect("PROBE_ORIGIN: zero, mean or a number"),
+            };
+            let raw: Vec<f64> = (0..u.len())
+                .map(|i| match z(i) {
+                    v if v.is_finite() => v - c,
+                    _ => 0.0,
+                })
+                .collect();
+            loadings.push(Some(raw));
+            if t != split.eliminated() {
+                let at = |column: usize| {
+                    let find = channels
+                        .iter()
+                        .find(|(ch, _)| ch.term == t && ch.column == column);
+                    find.expect("a kept channel").1.start
+                };
+                let icept = at(tl.intercept_column().expect("an intercept"));
+                let gf = fs.iter().map(|&(f, s)| (f, f * c - s)).collect();
+                maps.push(RawMap {
+                    intercept: icept,
+                    slope: at(slope),
+                    levels: gf,
+                });
+            }
+        }
+        RawSlopes { loadings, maps }
+    }
+
     /// `pair`'s block of `G` as its factor `V`, `√w_k (z_q(k) e_{a_k} + z_r(k) e_{n_q + b_k})`.
-    fn block(&self, pair: ChannelPair, shape: BlockShape) -> PairBlock<'p> {
+    fn block<'r>(
+        &self,
+        pair: ChannelPair,
+        shape: BlockShape,
+        raw: Option<&'r RawSlopes>,
+    ) -> PairBlock<'r>
+    where
+        'p: 'r,
+    {
         let (rows, cols) = (
             self.design.split.term(pair.rows.term),
             self.design.split.term(pair.cols.term),
         );
-        fn side<'p>(term: &TermBlock<'p>, column: usize) -> FactorWidth1<'p, f64> {
+        let side = |term: &TermBlock<'p>, t: usize, column: usize| -> FactorWidth1<'r, f64> {
             let (n, levels) = (term.layout().n_levels(), term.levels());
-            match term.loading(column) {
-                Some(z) => FactorWidth1::valued(n, levels, z),
-                None => FactorWidth1::new(n, levels),
+            let raw = raw.and_then(|r| r.loadings[t].as_deref());
+            match (term.loading(column), raw) {
+                (Some(_), Some(z)) => FactorWidth1::valued(n, levels, z),
+                (Some(z), None) => FactorWidth1::valued(n, levels, z),
+                (None, _) => FactorWidth1::new(n, levels),
             }
             .expect("levels index their term")
-        }
-        let (left, right) = (side(&rows, pair.rows.column), side(&cols, pair.cols.column));
+        };
+        let (left, right) = (
+            side(&rows, pair.rows.term, pair.rows.column),
+            side(&cols, pair.cols.term, pair.cols.column),
+        );
         let factor = match self.design.split.weights.sqrt() {
             Some(s) => BipartiteFactorWidth2::scaled(left, right, s),
             None => BipartiteFactorWidth2::new(left, right),
@@ -158,6 +258,47 @@ impl<'p> Gramian<'p> {
             pair,
             factor,
             shape,
+        }
+    }
+}
+
+/// PROTOTYPE(#614): the raw slope basis Schwarz is built in.
+pub(crate) struct RawSlopes {
+    /// Per term, its one slope as `z − c`; `None` keeps the orthogonal loading.
+    loadings: Vec<Option<Vec<f64>>>,
+    /// The kept terms' solve-to-caller maps.
+    pub(crate) maps: Vec<RawMap>,
+}
+
+/// PROTOTYPE(#614): one kept term's `M = [[1, g], [0, f]]` per level, from its solve coefficients
+/// (intercept, slope) to the caller's; identity where `f = 0` (a dropped slope).
+#[derive(Clone, Debug)]
+pub(crate) struct RawMap {
+    pub(crate) intercept: usize,
+    pub(crate) slope: usize,
+    /// Per level `(f, g)`.
+    pub(crate) levels: Vec<(f64, f64)>,
+}
+
+impl RawMap {
+    /// `r ← M⁻ᵀ r`.
+    pub(crate) fn inverse_adjoint(&self, r: &mut [f64]) {
+        for (l, &(f, g)) in self.levels.iter().enumerate() {
+            if f != 0.0 {
+                let (a, b) = (self.intercept + l, self.slope + l);
+                r[b] = (r[b] - g * r[a]) / f;
+            }
+        }
+    }
+
+    /// `z ← M⁻¹ z`.
+    pub(crate) fn inverse(&self, z: &mut [f64]) {
+        for (l, &(f, g)) in self.levels.iter().enumerate() {
+            if f != 0.0 {
+                let (a, b) = (self.intercept + l, self.slope + l);
+                z[b] /= f;
+                z[a] -= g * z[b];
+            }
         }
     }
 }

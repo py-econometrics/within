@@ -14,13 +14,16 @@ use schwarz_precond::{
 use serde::{Deserialize, Serialize};
 
 use crate::config::{LocalSolverConfig, ScalingFailure};
-use crate::system::{Gramian, PairBlock};
+use crate::system::{Gramian, PairBlock, RawMap};
 use crate::{BuildError, BuildWarning};
 
 /// The rung's map: additive Schwarz over the channel-pair subdomains.
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct FeSchwarz {
     inner: SchwarzPreconditioner<BlockSolver>,
+    /// PROTOTYPE(#614): built in the raw slope basis, applied as `M⁻¹ B M⁻ᵀ`; never persisted.
+    #[serde(skip)]
+    raw: Option<std::sync::Arc<Vec<RawMap>>>,
 }
 
 impl std::fmt::Debug for FeSchwarz {
@@ -33,7 +36,48 @@ impl std::fmt::Debug for FeSchwarz {
 
 impl FeSchwarz {
     pub(super) fn operator(&self) -> &dyn Operator {
-        &self.inner
+        match self.raw {
+            None => &self.inner,
+            Some(_) => self,
+        }
+    }
+}
+
+/// PROTOTYPE(#614): `M⁻¹ B M⁻ᵀ`, `B` the Schwarz map in the raw basis; allocates per apply.
+impl Operator for FeSchwarz {
+    fn nrows(&self) -> usize {
+        self.inner.nrows()
+    }
+
+    fn ncols(&self) -> usize {
+        self.inner.ncols()
+    }
+
+    fn scratch(&self) -> StackReq {
+        self.inner.scratch()
+    }
+
+    fn apply_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
+        let maps = self.raw.as_deref().expect("a raw-basis map");
+        let mut t = x.to_vec();
+        maps.iter().for_each(|m| m.inverse_adjoint(&mut t));
+        self.inner.apply_with(&t, y, stack)?;
+        maps.iter().for_each(|m| m.inverse(y));
+        Ok(())
+    }
+
+    fn apply_adjoint_with(
+        &self,
+        x: &[f64],
+        y: &mut [f64],
+        stack: &mut MemStack,
+    ) -> Result<(), schwarz_precond::SolveError> {
+        self.apply_with(x, y, stack)
     }
 }
 
@@ -42,11 +86,15 @@ pub(super) fn build(
     gramian: Gramian<'_>,
     config: &LocalSolverConfig,
 ) -> Result<(Option<FeSchwarz>, Vec<BuildWarning>), BuildError> {
-    let (domains, warnings) = build_local_domains(gramian, config)?;
+    let raw = (std::env::var("PROBE_BASIS").as_deref() == Ok("raw")).then(|| gramian.raw_slopes());
+    let same = std::env::var_os("PROBE_SAME_PAIRS").is_some();
+    let (domains, warnings) = build_local_domains(gramian, config, raw.as_ref(), same)?;
     if domains.is_empty() {
         return Ok((None, warnings));
     }
-    Ok((Some(build_additive(domains, gramian.n())?), warnings))
+    let mut schwarz = build_additive(domains, gramian.n())?;
+    schwarz.raw = raw.map(|r| std::sync::Arc::new(r.maps));
+    Ok((Some(schwarz), warnings))
 }
 
 /// `n_dofs` may exceed the span of subdomain indices; an uncovered column resolves to `0`.
@@ -57,6 +105,7 @@ fn build_additive(domains: Vec<LocalDomain>, n_dofs: usize) -> Result<FeSchwarz,
         .collect::<Result<Vec<_>, BuildError>>()?;
     Ok(FeSchwarz {
         inner: SchwarzPreconditioner::with_n_dofs(entries, n_dofs),
+        raw: None,
     })
 }
 
@@ -76,11 +125,13 @@ struct LocalDomain {
 fn build_local_domains(
     gramian: Gramian<'_>,
     config: &LocalSolverConfig,
+    raw: Option<&crate::system::RawSlopes>,
+    same: bool,
 ) -> Result<(Vec<LocalDomain>, Vec<BuildWarning>), BuildError> {
     let (approx, scaling) = (config.factor_config(), config.scaling_policy()?);
     let on_failure = config.scaling.on_failure;
     let per_pair: Vec<(Option<LocalDomain>, Vec<BuildWarning>)> = gramian
-        .pair_blocks()
+        .pair_blocks_in(raw, same)
         .into_par_iter()
         .map(|block| factor_pair(block, approx, scaling, on_failure))
         .collect::<Result<_, BuildError>>()?;
@@ -240,9 +291,13 @@ mod tests {
     #[test]
     fn test_full_cover_domain_count() {
         let design = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
-                .expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(
+            Gramian::new(&design),
+            &LocalSolverConfig::default(),
+            None,
+            false,
+        )
+        .expect("plain domains build");
         // 3 factor pairs; each pair may produce multiple components
         assert!(domain_pairs.len() >= 3);
     }
@@ -250,9 +305,13 @@ mod tests {
     #[test]
     fn test_partition_of_unity() {
         let design = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
-                .expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(
+            Gramian::new(&design),
+            &LocalSolverConfig::default(),
+            None,
+            false,
+        )
+        .expect("plain domains build");
         let n_dofs = design.unknowns().len();
         // Two-sided PoU: squared weights must sum to 1 at every DOF.
         let mut weight_sq_sum = vec![0.0; n_dofs];
@@ -284,9 +343,13 @@ mod tests {
         .expect("valid slope design");
         let design = design.reduce(None).unwrap();
 
-        let (domain_pairs, _) =
-            build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
-                .expect("slope domains build");
+        let (domain_pairs, _) = build_local_domains(
+            Gramian::new(&design),
+            &LocalSolverConfig::default(),
+            None,
+            false,
+        )
+        .expect("slope domains build");
 
         for ld in &domain_pairs {
             for i in 0..ld.core.global_indices().len() {
@@ -325,9 +388,13 @@ mod tests {
         ])
         .expect("valid design");
         let design = design.reduce(None).unwrap();
-        let (domains, _) =
-            build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
-                .expect("domains");
+        let (domains, _) = build_local_domains(
+            Gramian::new(&design),
+            &LocalSolverConfig::default(),
+            None,
+            false,
+        )
+        .expect("domains");
         let [domain] = &domains[..] else {
             panic!("one subdomain per pair, got {}", domains.len())
         };
@@ -349,9 +416,13 @@ mod tests {
     #[test]
     fn test_domains_cover_all_dofs() {
         let design = make_test_design();
-        let (domain_pairs, _) =
-            build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
-                .expect("plain domains build");
+        let (domain_pairs, _) = build_local_domains(
+            Gramian::new(&design),
+            &LocalSolverConfig::default(),
+            None,
+            false,
+        )
+        .expect("plain domains build");
         let mut covered = vec![false; design.unknowns().len()];
         for ld in &domain_pairs {
             for &idx in ld.core.global_indices() {

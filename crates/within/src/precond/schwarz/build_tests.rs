@@ -19,9 +19,13 @@ fn make_test_data() -> (ReducedDesign<'static>, Vec<LocalDomain>) {
     let design = Design::from_levels_for_test(vec![vec![0, 1, 0, 1, 2], vec![0, 0, 1, 1, 0]])
         .reduce(None)
         .unwrap();
-    let (domain_pairs, _) =
-        build_local_domains(Gramian::new(&design), &LocalSolverConfig::default())
-            .expect("plain domains build");
+    let (domain_pairs, _) = build_local_domains(
+        Gramian::new(&design),
+        &LocalSolverConfig::default(),
+        None,
+        false,
+    )
+    .expect("plain domains build");
     (design, domain_pairs)
 }
 
@@ -57,7 +61,7 @@ fn run_block_elim_nested_rayon_case() {
     let design = synthetic_star_design(n_keep, elim_ratio);
     let n_dofs = design.unknowns().len();
     let (mut domain_pairs, _) =
-        build_local_domains(Gramian::new(&design), &config).expect("domains");
+        build_local_domains(Gramian::new(&design), &config, None, false).expect("domains");
     let [domain] = &domain_pairs[..] else {
         panic!("one component expected, got {}", domain_pairs.len())
     };
@@ -149,7 +153,8 @@ fn small_subdomain_solve(schur: SchurMode, dense_threshold: usize) -> Vec<f64> {
         ..Default::default()
     };
     let design = synthetic_star_design(8, 4);
-    let (domains, _) = build_local_domains(Gramian::new(&design), &config).expect("domains");
+    let (domains, _) =
+        build_local_domains(Gramian::new(&design), &config, None, false).expect("domains");
     let [domain] = &domains[..] else {
         panic!("one component expected, got {}", domains.len())
     };
