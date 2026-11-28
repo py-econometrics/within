@@ -479,6 +479,12 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
 
         // A pass reports its drop from its own ζ̄₀, so a restarted one needs a handler that agrees.
         let mut escalation = escalation.map(EscalationPolicy::handler);
+        if ritz_trace() {
+            eprintln!(
+                "[ritz] pass={restarts} a={:e} b={:e}",
+                step1.alpha, step1.beta
+            );
+        }
         let mut convergence = criteria.start(step1.alpha);
         let mut recurrence = LsmrRecurrenceState::init(step1);
         let mut solution = SolutionState::init(bidiag.v(), step1.beta);
@@ -498,6 +504,9 @@ fn lsmr_from_bidiag<B: Bidiagonalization>(
             while iterations < maxiter {
                 iterations += 1;
                 let step = bidiag.step()?;
+                if ritz_trace() {
+                    eprintln!("[ritz] a={:e} b={:e}", step.alpha, step.beta);
+                }
                 convergence.observe(step);
                 let curr_rot = recurrence.step(step);
                 solution.update(bidiag.v(), curr_rot, prev_rot);
@@ -688,4 +697,10 @@ fn invalid_input(message: String) -> SolveError {
         context: "lsmr",
         message,
     }
+}
+
+/// SCREENING: `PROBE_RITZ` prints each Golub–Kahan step's `(α, β)` for Ritz values offline.
+fn ritz_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("PROBE_RITZ").is_some())
 }
