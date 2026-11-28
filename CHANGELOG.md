@@ -7,6 +7,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- A design whose rows are not sorted by its dominant term gathers every term's levels in its new row order in parallel, and so does a solve its responses: design −38% and solve −17% at 160M rows on a shuffled 3-FE panel, bit-identical at any thread count.
 - Long weighted Gram diagonals use compensated accumulation.
 - Weights near either end of the float range are scaled by a power of four, so a level's weight sum and its reciprocal stay finite.
 

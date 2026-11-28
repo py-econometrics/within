@@ -1,5 +1,11 @@
 use std::ops::Range;
 
+use rayon::prelude::*;
+
+/// Rows per task of a gather, at least. On the 3-FE panel shuffled at 12 threads, a gather's time
+/// is flat from 2^12 to 2^18 (0.165–0.167 s at 40M rows, 0.64–0.70 s at 160M).
+const ROW_GRAIN: usize = 1 << 14;
+
 /// Observation indices, 4 bytes each while every row fits `u32`.
 #[derive(Clone, Debug)]
 pub(crate) enum RowIndex {
@@ -28,7 +34,7 @@ impl RowIndex {
     }
 
     /// `out[k] = col[self[k]]`.
-    pub(crate) fn gather<T: Copy>(&self, col: &[T]) -> Vec<T> {
+    pub(crate) fn gather<T: Copy + Send + Sync>(&self, col: &[T]) -> Vec<T> {
         match self {
             Self::Narrow(rows) => gather(col, rows, |k| k as usize),
             Self::Wide(rows) => gather(col, rows, |k| k),
@@ -59,10 +65,14 @@ fn stable_argsort<I: Copy + Default>(
     rows.into_boxed_slice()
 }
 
-// Inlined into `Design::build`, its loop measured +3–8% on slope designs.
-#[inline(never)]
-fn gather<T: Copy, I: Copy>(col: &[T], rows: &[I], row: impl Fn(I) -> usize) -> Vec<T> {
-    rows.iter().map(|&k| col[row(k)]).collect()
+fn gather<T: Copy + Send + Sync, I: Copy + Sync>(
+    col: &[T],
+    rows: &[I],
+    row: impl Fn(I) -> usize + Sync,
+) -> Vec<T> {
+    (rows.par_iter().with_min_len(ROW_GRAIN))
+        .map(|&k| col[row(k)])
+        .collect()
 }
 
 fn scatter<I: Copy>(v: &[f64], rows: &[I], row: impl Fn(I) -> usize) -> Vec<f64> {
