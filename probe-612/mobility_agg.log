@@ -1,0 +1,20 @@
+15:29:48 run 1/20 r0 akm_mobility0.001_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.2s it=[35] eta=0min
+15:29:49 run 2/20 r0 akm_mobility0.001_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.9s it=[464] eta=0min
+15:29:53 run 3/20 r0 akm_mobility0.001_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 3.9s it=[903] eta=0min
+15:29:53 run 4/20 r0 akm_mobility0.001_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.4s it=[53] eta=0min
+15:29:54 run 5/20 r1 akm_mobility0.001_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.8s it=[464] eta=0min
+15:29:54 run 6/20 r1 akm_mobility0.001_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.2s it=[35] eta=0min
+15:29:55 run 7/20 r1 akm_mobility0.001_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.4s it=[53] eta=0min
+15:29:59 run 8/20 r1 akm_mobility0.001_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 4.0s it=[903] eta=0min
+15:29:59 run 9/20 r2 akm_mobility0.001_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.2s it=[35] eta=0min
+15:30:00 run 10/20 r2 akm_mobility0.001_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.8s it=[464] eta=0min
+15:30:04 run 11/20 r2 akm_mobility0.001_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 4.3s it=[903] eta=0min
+15:30:04 run 12/20 r2 akm_mobility0.001_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.4s it=[53] eta=0min
+15:30:05 run 13/20 r3 akm_mobility0.001_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.7s it=[464] eta=0min
+15:30:05 run 14/20 r3 akm_mobility0.001_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.2s it=[35] eta=0min
+15:30:06 run 15/20 r3 akm_mobility0.001_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.4s it=[53] eta=0min
+15:30:10 run 16/20 r3 akm_mobility0.001_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 4.4s it=[903] eta=0min
+15:30:10 run 17/20 r4 akm_mobility0.001_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.2s it=[35] eta=0min
+15:30:11 run 18/20 r4 akm_mobility0.001_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.7s it=[464] eta=0min
+15:30:15 run 19/20 r4 akm_mobility0.001_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 4.3s it=[903] eta=0min
+15:30:16 run 20/20 r4 akm_mobility0.001_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.4s it=[53] eta=0min

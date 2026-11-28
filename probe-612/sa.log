@@ -1,0 +1,20 @@
+15:30:16 run 1/10 r0 akm_sorting1e4_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.6s it=[298] eta=0min
+15:30:17 run 2/10 r0 akm_sorting1e4_near_shared_year_250k cand:F_schwarz|PROBE_COARSE=fixed PROBE_SPACE=sa PROBE_SA_THETA=0.02 0.8s it=[41] eta=0min
+15:30:19 run 3/10 r1 akm_sorting1e4_near_shared_year_250k cand:F_schwarz|PROBE_COARSE=fixed PROBE_SPACE=sa PROBE_SA_THETA=0.02 1.3s it=[41] eta=0min
+15:30:19 run 4/10 r1 akm_sorting1e4_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.7s it=[298] eta=0min
+15:30:20 run 5/10 r2 akm_sorting1e4_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.7s it=[298] eta=0min
+15:30:21 run 6/10 r2 akm_sorting1e4_near_shared_year_250k cand:F_schwarz|PROBE_COARSE=fixed PROBE_SPACE=sa PROBE_SA_THETA=0.02 0.7s it=[41] eta=0min
+15:30:22 run 7/10 r3 akm_sorting1e4_near_shared_year_250k cand:F_schwarz|PROBE_COARSE=fixed PROBE_SPACE=sa PROBE_SA_THETA=0.02 1.5s it=[41] eta=0min
+15:30:25 run 8/10 r3 akm_sorting1e4_near_shared_year_250k base:OL|PROBE_COARSE=climb 2.6s it=[298] eta=0min
+15:30:26 run 9/10 r4 akm_sorting1e4_near_shared_year_250k base:OL|PROBE_COARSE=climb 1.1s it=[298] eta=0min
+15:30:27 run 10/10 r4 akm_sorting1e4_near_shared_year_250k cand:F_schwarz|PROBE_COARSE=fixed PROBE_SPACE=sa PROBE_SA_THETA=0.02 0.8s it=[41] eta=0min
+15:30:31 run 1/10 r0 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb 4.6s it=[463] eta=1min
+15:30:37 run 2/10 r0 akm_sorting1e4_near_shared_year_1000k cand:F_schwarz|PROBE_COARSE=fixed PROBE_SPACE=sa PROBE_SA_THETA=0.01 5.7s it=[45] eta=1min
+15:30:43 run 3/10 r1 akm_sorting1e4_near_shared_year_1000k cand:F_schwarz|PROBE_COARSE=fixed PROBE_SPACE=sa PROBE_SA_THETA=0.01 5.6s it=[45] eta=1min
+15:30:47 run 4/10 r1 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb 4.3s it=[463] eta=1min
+15:30:51 run 5/10 r2 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb 4.4s it=[463] eta=0min
+15:30:57 run 6/10 r2 akm_sorting1e4_near_shared_year_1000k cand:F_schwarz|PROBE_COARSE=fixed PROBE_SPACE=sa PROBE_SA_THETA=0.01 5.6s it=[45] eta=0min
+15:31:03 run 7/10 r3 akm_sorting1e4_near_shared_year_1000k cand:F_schwarz|PROBE_COARSE=fixed PROBE_SPACE=sa PROBE_SA_THETA=0.01 6.3s it=[45] eta=0min
+15:31:07 run 8/10 r3 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb 4.1s it=[463] eta=0min
+15:31:12 run 9/10 r4 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb 4.3s it=[463] eta=0min
+15:31:17 run 10/10 r4 akm_sorting1e4_near_shared_year_1000k cand:F_schwarz|PROBE_COARSE=fixed PROBE_SPACE=sa PROBE_SA_THETA=0.01 5.5s it=[45] eta=0min

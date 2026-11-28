@@ -1,0 +1,32 @@
+15:29:12 run 1/32 r0 akm_mobility0.001_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.2s it=[35] eta=0min
+15:29:13 run 2/32 r0 akm_mobility0.001_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.2s it=[30] eta=0min
+15:29:13 run 3/32 r0 akm_mobility0.001_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.4s it=[42] eta=0min
+15:29:13 run 4/32 r0 akm_mobility0.001_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.4s it=[53] eta=0min
+15:29:15 run 5/32 r0 akm_mobility0.001_near_shared_year_4000k base:OL|PROBE_COARSE=climb 1.3s it=[48] eta=0min
+15:29:16 run 6/32 r0 akm_mobility0.001_near_shared_year_4000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 1.4s it=[42] eta=0min
+15:29:20 run 7/32 r0 akm_mobility0.001_near_shared_year_10000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 3.7s it=[44] eta=0min
+15:29:23 run 8/32 r0 akm_mobility0.001_near_shared_year_10000k base:OL|PROBE_COARSE=climb 3.3s it=[50] eta=1min
+15:29:23 run 9/32 r1 akm_mobility0.001_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.2s it=[30] eta=0min
+15:29:24 run 10/32 r1 akm_mobility0.001_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.2s it=[35] eta=0min
+15:29:24 run 11/32 r1 akm_mobility0.001_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.4s it=[53] eta=0min
+15:29:24 run 12/32 r1 akm_mobility0.001_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.5s it=[42] eta=0min
+15:29:26 run 13/32 r1 akm_mobility0.001_near_shared_year_4000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 1.5s it=[42] eta=0min
+15:29:27 run 14/32 r1 akm_mobility0.001_near_shared_year_4000k base:OL|PROBE_COARSE=climb 1.3s it=[48] eta=0min
+15:29:31 run 15/32 r1 akm_mobility0.001_near_shared_year_10000k base:OL|PROBE_COARSE=climb 3.3s it=[50] eta=0min
+15:29:35 run 16/32 r1 akm_mobility0.001_near_shared_year_10000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 3.9s it=[44] eta=0min
+15:29:35 run 17/32 r2 akm_mobility0.001_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.2s it=[35] eta=0min
+15:29:35 run 18/32 r2 akm_mobility0.001_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.2s it=[30] eta=0min
+15:29:35 run 19/32 r2 akm_mobility0.001_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.4s it=[42] eta=0min
+15:29:36 run 20/32 r2 akm_mobility0.001_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.4s it=[53] eta=0min
+15:29:37 run 21/32 r2 akm_mobility0.001_near_shared_year_4000k base:OL|PROBE_COARSE=climb 1.3s it=[48] eta=0min
+15:29:38 run 22/32 r2 akm_mobility0.001_near_shared_year_4000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 1.4s it=[42] eta=0min
+15:29:42 run 23/32 r2 akm_mobility0.001_near_shared_year_10000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 3.8s it=[44] eta=0min
+15:29:45 run 24/32 r2 akm_mobility0.001_near_shared_year_10000k base:OL|PROBE_COARSE=climb 3.2s it=[50] eta=0min
+15:29:46 run 25/32 r3 akm_mobility0.001_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.2s it=[30] eta=0min
+15:29:46 run 26/32 r3 akm_mobility0.001_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.2s it=[35] eta=0min
+15:29:46 run 27/32 r3 akm_mobility0.001_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.4s it=[53] eta=0min
+15:29:47 run 28/32 r3 akm_mobility0.001_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.5s it=[42] eta=0min
+15:29:47 run 29/32 r4 akm_mobility0.001_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.2s it=[35] eta=0min
+15:29:47 run 30/32 r4 akm_mobility0.001_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.2s it=[30] eta=0min
+15:29:47 run 31/32 r4 akm_mobility0.001_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.4s it=[42] eta=0min
+15:29:48 run 32/32 r4 akm_mobility0.001_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.4s it=[53] eta=0min

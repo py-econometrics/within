@@ -1,0 +1,10 @@
+15:31:35 run 1/10 r0 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb PROBE_BATCH=8 17.9s it=[463, 379, 443, 385, 439, 555, 384, 383] eta=3min
+15:31:45 run 2/10 r0 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_BATCH=8 PROBE_RECYCLE=30 10.1s it=[463, 90, 133, 125, 125, 89, 132, 93] eta=2min
+15:31:55 run 3/10 r1 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_BATCH=8 PROBE_RECYCLE=30 10.0s it=[463, 90, 133, 125, 125, 89, 132, 93] eta=1min
+15:32:11 run 4/10 r1 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb PROBE_BATCH=8 15.8s it=[463, 380, 443, 385, 439, 555, 384, 383] eta=1min
+15:32:26 run 5/10 r2 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb PROBE_BATCH=8 14.7s it=[463, 380, 443, 385, 439, 555, 384, 383] eta=1min
+15:32:37 run 6/10 r2 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_BATCH=8 PROBE_RECYCLE=30 10.9s it=[463, 90, 133, 125, 125, 89, 132, 93] eta=1min
+15:32:48 run 7/10 r3 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_BATCH=8 PROBE_RECYCLE=30 11.1s it=[463, 90, 133, 125, 125, 89, 132, 93] eta=1min
+15:33:03 run 8/10 r3 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb PROBE_BATCH=8 15.6s it=[463, 380, 443, 385, 439, 555, 384, 383] eta=0min
+15:33:19 run 9/10 r4 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb PROBE_BATCH=8 15.7s it=[463, 380, 443, 385, 439, 555, 384, 383] eta=0min
+15:33:29 run 10/10 r4 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_BATCH=8 PROBE_RECYCLE=30 10.4s it=[463, 90, 133, 125, 125, 89, 132, 93] eta=0min

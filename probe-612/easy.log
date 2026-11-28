@@ -1,0 +1,18 @@
+15:33:30 run 1/18 r0 akm_sorting1e4_intercepts_1000k base:OL|PROBE_COARSE=climb 0.4s it=[28] eta=0min
+15:33:30 run 2/18 r0 akm_sorting1e4_intercepts_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.4s it=[28] eta=0min
+15:33:31 run 3/18 r0 akm_sorting1e4_intercepts_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.4s it=[28] eta=0min
+15:33:31 run 4/18 r0 akm_mobility1.0_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.8s it=[27] eta=0min
+15:33:32 run 5/18 r0 akm_mobility1.0_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.8s it=[27] eta=0min
+15:33:33 run 6/18 r0 akm_mobility1.0_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.8s it=[27] eta=0min
+15:33:33 run 7/18 r1 akm_sorting1e4_intercepts_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.4s it=[28] eta=0min
+15:33:34 run 8/18 r1 akm_sorting1e4_intercepts_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.4s it=[28] eta=0min
+15:33:34 run 9/18 r1 akm_sorting1e4_intercepts_1000k base:OL|PROBE_COARSE=climb 0.4s it=[28] eta=0min
+15:33:35 run 10/18 r1 akm_mobility1.0_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.8s it=[27] eta=0min
+15:33:36 run 11/18 r1 akm_mobility1.0_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.9s it=[27] eta=0min
+15:33:37 run 12/18 r1 akm_mobility1.0_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 1.0s it=[27] eta=0min
+15:33:37 run 13/18 r2 akm_sorting1e4_intercepts_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.4s it=[28] eta=0min
+15:33:38 run 14/18 r2 akm_sorting1e4_intercepts_1000k base:OL|PROBE_COARSE=climb 0.4s it=[28] eta=0min
+15:33:38 run 15/18 r2 akm_sorting1e4_intercepts_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.4s it=[28] eta=0min
+15:33:39 run 16/18 r2 akm_mobility1.0_near_shared_year_1000k base:OL|PROBE_COARSE=climb 0.8s it=[27] eta=0min
+15:33:40 run 17/18 r2 akm_mobility1.0_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.9s it=[27] eta=0min
+15:33:41 run 18/18 r2 akm_mobility1.0_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=rigid-small-lift 0.9s it=[27] eta=0min

@@ -1,0 +1,48 @@
+15:13:11 run 1/48 r0 akm_sorting1e4_near_shared_year_250k base:OL|PROBE_COARSE=climb 4.4s it=[298] eta=3min
+15:13:17 run 2/48 r0 akm_sorting1e4_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 6.0s it=[276] eta=4min
+15:13:20 run 3/48 r0 akm_sorting1e4_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 3.5s it=[87] eta=3min
+15:13:29 run 4/48 r0 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 9.1s it=[362] eta=4min
+15:13:32 run 5/48 r0 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 2.9s it=[97] eta=4min
+15:13:37 run 6/48 r0 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb 5.0s it=[463] eta=4min
+15:14:00 run 7/48 r0 akm_sorting1e4_near_shared_year_4000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 23.0s it=[97] eta=5min
+15:14:42 run 8/48 r0 akm_sorting1e4_near_shared_year_4000k base:OL|PROBE_COARSE=climb 41.6s it=[665] eta=8min
+15:15:12 run 9/48 r0 akm_sorting1e4_near_shared_year_4000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 29.7s it=[399] eta=9min
+15:16:34 run 10/48 r0 akm_sorting1e4_near_shared_year_10000k base:OL|PROBE_COARSE=climb 81.8s it=[444] eta=13min
+15:17:36 run 11/48 r0 akm_sorting1e4_near_shared_year_10000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 62.3s it=[302] eta=15min
+15:19:07 run 12/48 r0 akm_sorting1e4_near_shared_year_10000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 90.8s it=[444] eta=18min
+15:19:07 run 13/48 r1 akm_sorting1e4_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 0.8s it=[276] eta=16min
+15:19:08 run 14/48 r1 akm_sorting1e4_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.4s it=[87] eta=15min
+15:19:09 run 15/48 r1 akm_sorting1e4_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.8s it=[298] eta=13min
+15:19:11 run 16/48 r1 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 2.5s it=[97] eta=12min
+15:19:16 run 17/48 r1 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb 4.4s it=[463] eta=11min
+15:19:20 run 18/48 r1 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 4.4s it=[362] eta=10min
+15:19:52 run 19/48 r1 akm_sorting1e4_near_shared_year_4000k base:OL|PROBE_COARSE=climb 31.6s it=[665] eta=10min
+15:20:14 run 20/48 r1 akm_sorting1e4_near_shared_year_4000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 22.9s it=[399] eta=10min
+15:20:27 run 21/48 r1 akm_sorting1e4_near_shared_year_4000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 12.9s it=[97] eta=9min
+15:21:23 run 22/48 r1 akm_sorting1e4_near_shared_year_10000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 55.5s it=[302] eta=10min
+15:22:45 run 23/48 r1 akm_sorting1e4_near_shared_year_10000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 82.4s it=[444] eta=10min
+15:23:50 run 24/48 r1 akm_sorting1e4_near_shared_year_10000k base:OL|PROBE_COARSE=climb 65.0s it=[444] eta=11min
+15:23:51 run 25/48 r2 akm_sorting1e4_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.5s it=[87] eta=10min
+15:23:51 run 26/48 r2 akm_sorting1e4_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.8s it=[298] eta=9min
+15:23:52 run 27/48 r2 akm_sorting1e4_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 0.7s it=[276] eta=8min
+15:23:56 run 28/48 r2 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb 4.2s it=[463] eta=8min
+15:24:00 run 29/48 r2 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 3.9s it=[362] eta=7min
+15:24:02 run 30/48 r2 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 2.2s it=[97] eta=7min
+15:24:24 run 31/48 r2 akm_sorting1e4_near_shared_year_4000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 21.9s it=[399] eta=6min
+15:24:38 run 32/48 r2 akm_sorting1e4_near_shared_year_4000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 13.4s it=[97] eta=6min
+15:25:09 run 33/48 r2 akm_sorting1e4_near_shared_year_4000k base:OL|PROBE_COARSE=climb 31.2s it=[665] eta=5min
+15:26:37 run 34/48 r2 akm_sorting1e4_near_shared_year_10000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 87.8s it=[444] eta=6min
+15:27:49 run 35/48 r2 akm_sorting1e4_near_shared_year_10000k base:OL|PROBE_COARSE=climb 71.9s it=[444] eta=5min
+15:28:47 run 36/48 r2 akm_sorting1e4_near_shared_year_10000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 58.0s it=[302] eta=5min
+15:28:47 run 37/48 r3 akm_sorting1e4_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.7s it=[298] eta=5min
+15:28:48 run 38/48 r3 akm_sorting1e4_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 0.9s it=[276] eta=4min
+15:28:49 run 39/48 r3 akm_sorting1e4_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.5s it=[87] eta=4min
+15:28:53 run 40/48 r3 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 4.0s it=[362] eta=3min
+15:28:55 run 41/48 r3 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 2.4s it=[97] eta=3min
+15:28:59 run 42/48 r3 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb 4.4s it=[463] eta=2min
+15:29:00 run 43/48 r4 akm_sorting1e4_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 0.7s it=[276] eta=2min
+15:29:01 run 44/48 r4 akm_sorting1e4_near_shared_year_250k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 0.4s it=[87] eta=1min
+15:29:01 run 45/48 r4 akm_sorting1e4_near_shared_year_250k base:OL|PROBE_COARSE=climb 0.7s it=[298] eta=1min
+15:29:04 run 46/48 r4 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=agg PROBE_SA_THETA=0.01 2.4s it=[97] eta=1min
+15:29:08 run 47/48 r4 akm_sorting1e4_near_shared_year_1000k base:OL|PROBE_COARSE=climb 4.3s it=[463] eta=0min
+15:29:12 run 48/48 r4 akm_sorting1e4_near_shared_year_1000k cand:OL|PROBE_COARSE=climb PROBE_SPACE=components-lift 4.2s it=[362] eta=0min
