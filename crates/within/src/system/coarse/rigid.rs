@@ -13,12 +13,68 @@ use crate::design::LevelSegments;
 use crate::system::{SplitDesign, TermBlock};
 use glue::Gauges;
 
+/// PROTOTYPE(#612): the anchor term's unknowns and its caller-coordinate gauges, for the coarse
+/// spaces built on the assembled `S`.
+pub(super) struct AnchorGauges {
+    /// The anchor's block start among the unknowns.
+    pub(super) start: usize,
+    pub(super) n_levels: usize,
+    /// Channels: the eliminated term's column count, which the anchor shares.
+    pub(super) p: usize,
+    /// Per level `l` and caller column `j`, the `p` solve coefficients at `(l · p + j) · p`.
+    pub(super) gauge: Vec<f64>,
+    /// The intercept column, if the anchor has one.
+    pub(super) intercept: Option<usize>,
+}
+
+impl AnchorGauges {
+    pub(super) fn of(split: &SplitDesign<'_>) -> Option<Self> {
+        let anchor = glue::Anchor::find(split)?;
+        let p = split.term(split.eliminated()).layout().n_columns();
+        Some(Self {
+            start: anchor.start,
+            n_levels: anchor.n_levels(),
+            p,
+            gauge: anchor.gauges(p),
+            intercept: anchor.intercept(),
+        })
+    }
+
+    /// The unknown of channel `q` at level `l`.
+    pub(super) fn unknown(&self, q: usize, l: usize) -> usize {
+        self.start + q * self.n_levels + l
+    }
+}
+
 /// The coarse solve over the unknowns; declines when gluing leaves no coarse space worth a column
 /// or its factor exceeds `n_obs` values.
 pub(super) fn build(split: &SplitDesign<'_>) -> Result<CoarseSolve, CoarseDecline> {
+    build_with(split, None)
+}
+
+/// PROTOTYPE(#612): the rigid coarse solve, `small` adding the small terms' unknowns as columns.
+pub(super) fn build_with(
+    split: &SplitDesign<'_>,
+    small: Option<&SmallColumns>,
+) -> Result<CoarseSolve, CoarseDecline> {
     let rows = Rows::new(split);
     let gauges = Gauges::glue(split, &rows)?;
-    lift::coarse_solve(split, &rows, &gauges)
+    lift::coarse_solve(split, &rows, &gauges, small)
+}
+
+pub(super) use lift::SmallColumns;
+
+/// PROTOTYPE(#612): the rigid lift over given groups of anchor levels instead of glued
+/// components, `small` adding the small terms' unknowns as coarse columns.
+pub(super) fn build_grouped(
+    split: &SplitDesign<'_>,
+    of_anchor: Vec<u32>,
+    count: usize,
+    small: Option<&SmallColumns>,
+) -> Result<CoarseSolve, CoarseDecline> {
+    let rows = Rows::new(split);
+    let gauges = Gauges::of_groups(split, &rows, of_anchor, count)?;
+    lift::coarse_solve(split, &rows, &gauges, small)
 }
 
 /// `diag(D̃_tᵀ W D̃_t)` of term `term`, each level's whole Gram, column-major (`c · L + l`).
@@ -39,7 +95,7 @@ fn term_gram(split: &SplitDesign<'_>, term: usize) -> Vec<f64> {
 }
 
 /// The eliminated term's rows grouped by level, read in the solve basis.
-struct Rows<'p> {
+pub(super) struct Rows<'p> {
     segments: &'p LevelSegments,
     eliminated: TermBlock<'p>,
     n_levels: usize,
@@ -49,7 +105,7 @@ struct Rows<'p> {
 }
 
 impl<'p> Rows<'p> {
-    fn new(split: &'p SplitDesign<'_>) -> Self {
+    pub(super) fn new(split: &'p SplitDesign<'_>) -> Self {
         let e = split.eliminated();
         let eliminated = split.term(e);
         Self {
@@ -61,20 +117,20 @@ impl<'p> Rows<'p> {
         }
     }
 
-    fn n_levels(&self) -> usize {
+    pub(super) fn n_levels(&self) -> usize {
         self.n_levels
     }
 
-    fn width(&self) -> usize {
+    pub(super) fn width(&self) -> usize {
         self.eliminated.layout().n_columns()
     }
 
     /// `√w` of row `i`.
-    fn root(&self, i: usize) -> f64 {
+    pub(super) fn root(&self, i: usize) -> f64 {
         self.sqrt_weights.map_or(1.0, |s| s[i])
     }
 
-    fn level(&self, level: usize) -> EliminatedLevel<'_> {
+    pub(super) fn level(&self, level: usize) -> EliminatedLevel<'_> {
         EliminatedLevel {
             rows: self,
             level,
@@ -84,7 +140,7 @@ impl<'p> Rows<'p> {
 }
 
 /// One level's columns of `A_e`, `W½ D_e`; their row `k` is the level's `k`-th row.
-struct EliminatedLevel<'r> {
+pub(super) struct EliminatedLevel<'r> {
     rows: &'r Rows<'r>,
     level: usize,
     /// The level's rows: the rows are sorted by the eliminated term.
@@ -93,7 +149,7 @@ struct EliminatedLevel<'r> {
 
 impl EliminatedLevel<'_> {
     /// The rows of positive weight, with their position in the level.
-    fn weighted(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+    pub(super) fn weighted(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         let rows = self.rows;
         (self.positions.clone().enumerate()).filter(|&(_, r)| rows.root(r) > 0.0)
     }

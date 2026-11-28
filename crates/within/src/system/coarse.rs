@@ -2,7 +2,9 @@
 //! reduced system: `Z`, `SZ` and the factor of `E = ZᵀSZ`, for the two-level map
 //! `PᵀBP + Q` with `Q = Z E⁻¹ Zᵀ`, `P = I − SQ`.
 
+mod assembled;
 mod rigid;
+pub(crate) mod spaces;
 
 use std::ops::Range;
 
@@ -40,8 +42,10 @@ pub(crate) enum CoarseDecline {
 
 impl Gramian<'_> {
     /// PROTOTYPE(#607): the rigid coarse solve over the unknowns, or why there is none.
+    ///
+    /// PROTOTYPE(#612): `PROBE_SPACE` picks another coarse space; see [`spaces::Space`].
     pub(crate) fn rigid_coarse(&self) -> Result<CoarseSolve, CoarseDecline> {
-        rigid::build(&self.design.split)
+        spaces::build(self.design, spaces::space())
     }
 }
 
@@ -83,6 +87,18 @@ impl CoarseSolve {
     /// Stored nonzeros of `Z`, `SZ` and `F`.
     pub(crate) fn nnz(&self) -> usize {
         self.z.nnz() + self.sz.nnz() + self.hubs.as_ref().map_or(0, |h| h.f.nnz())
+    }
+
+    /// PROTOTYPE(#612): `Z`'s columns as `(unknown, value)` lists.
+    pub(super) fn z_columns(&self) -> Vec<Vec<(u32, f64)>> {
+        let z = &self.z;
+        (0..z.ncols())
+            .map(|c| {
+                (z.col_ptr[c]..z.col_ptr[c + 1])
+                    .map(|k| (z.col_idx[k], z.col_val[k]))
+                    .collect()
+            })
+            .collect()
     }
 
     /// `out = Zᵀx`.
@@ -350,6 +366,25 @@ impl TwoWay {
 
     fn nnz(&self) -> usize {
         self.col_idx.len()
+    }
+
+    /// PROTOTYPE(#612): these columns followed by `extra`, each `(row, value)` ascending.
+    fn with_columns(self, n: usize, extra: impl Iterator<Item = Vec<(u32, f64)>>) -> Self {
+        let (mut col_ptr, mut col_idx, mut col_val) = (self.col_ptr, self.col_idx, self.col_val);
+        for col in extra {
+            for (r, v) in col {
+                col_idx.push(r);
+                col_val.push(v);
+            }
+            col_ptr.push(col_idx.len());
+        }
+        Self::from_columns(n, col_ptr, col_idx, col_val)
+    }
+
+    /// PROTOTYPE(#612): row `r`'s entry span in the row view, if it has any.
+    fn row_span(&self, r: u32) -> Option<(usize, usize)> {
+        let i = self.rows.binary_search(&r).ok()?;
+        Some((self.row_ptr[i], self.row_ptr[i + 1]))
     }
 
     fn ncols(&self) -> usize {

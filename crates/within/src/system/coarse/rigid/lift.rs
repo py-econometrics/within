@@ -18,6 +18,7 @@ pub(super) fn coarse_solve(
     split: &SplitDesign<'_>,
     rows: &Rows<'_>,
     gauges: &Gauges<'_>,
+    small: Option<&SmallColumns>,
 ) -> Result<CoarseSolve, CoarseDecline> {
     let kept = DynamicKept::new(split);
     let lift = Lift { rows, gauges, kept };
@@ -27,10 +28,44 @@ pub(super) fn coarse_solve(
         .collect();
     let live = Live::new(&fits, gauges, rows.width())?;
     let n = split.unknowns().len();
-    let z = lift.coarse_basis(&live, n);
-    let (lower, hubs) = lift.coarse_system(&mut fits, &live);
-    let factor = CoarseFactor::new(live.count, lower, Some(&hubs), split.n_obs())?;
-    let sz = lift.projected_columns(&fits, &live, n);
+    let mut z = lift.coarse_basis(&live, n);
+    let (mut lower, hubs) = lift.coarse_system(&mut fits, &live);
+    let mut sz = lift.projected_columns(&fits, &live, n);
+    let mut coarse = live.count;
+    if let Some(small) = small {
+        // PROTOTYPE(#612): the small terms' unknowns as further coarse columns: `E` gains
+        // `W = Z_smallᵀ S Z` and `S_SS`, from `S`'s whole columns there.
+        let m = live.count;
+        for (s, col) in small.dense.chunks_exact(n).enumerate() {
+            let row = (m + s) as u32;
+            for k in 0..m {
+                let w: f64 = (z.col_ptr[k]..z.col_ptr[k + 1])
+                    .map(|q| z.col_val[q] * col[z.col_idx[q] as usize])
+                    .sum();
+                if w != 0.0 {
+                    lower.push((k as u32, row, w));
+                }
+            }
+            for (t, &u) in small.unknowns.iter().enumerate().take(s + 1) {
+                let v = col[u as usize];
+                if v != 0.0 {
+                    lower.push(((m + t) as u32, row, v));
+                }
+            }
+        }
+        z = z.with_columns(n, small.unknowns.iter().map(|&u| vec![(u, 1.0)]));
+        sz = sz.with_columns(
+            n,
+            (small.dense.chunks_exact(n)).map(|col| {
+                (col.iter().enumerate())
+                    .filter(|e| *e.1 != 0.0)
+                    .map(|(r, &v)| (r as u32, v))
+                    .collect()
+            }),
+        );
+        coarse += small.unknowns.len();
+    }
+    let factor = CoarseFactor::new(coarse, lower, Some(&hubs), split.n_obs())?;
     let f = lift.hub_coupling(&fits, n, hubs.rank());
     Ok(CoarseSolve {
         z,
@@ -38,6 +73,12 @@ pub(super) fn coarse_solve(
         hubs: (hubs.rank() > 0).then_some(HubCorrection { rows: hubs, f }),
         factor,
     })
+}
+
+/// PROTOTYPE(#612): the small kept terms' unknowns and `S`'s whole columns there, `s · n`.
+pub(in crate::system::coarse) struct SmallColumns {
+    pub(in crate::system::coarse) unknowns: Vec<u32>,
+    pub(in crate::system::coarse) dense: Vec<f64>,
 }
 
 /// The coarse columns of a level touching components `comps`: every channel of each.

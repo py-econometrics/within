@@ -119,18 +119,18 @@ fn spells(rows: &Rows<'_>, anchor: &Anchor<'_>) -> (Vec<Vec<u32>>, Vec<Vec<u32>>
 }
 
 /// The kept term with the eliminated term's column layout and the most levels.
-struct Anchor<'p> {
+pub(super) struct Anchor<'p> {
     term: TermBlock<'p>,
     /// Its slopes' change of basis, for the caller-coordinate gauges.
     slopes: &'p OrthogonalSlopes,
     /// Its block start among the unknowns.
-    start: usize,
+    pub(super) start: usize,
     /// Its `diag(D̃ᵀWD̃)` block, each level's whole Gram after whitening, column-major.
     gram: Vec<f64>,
 }
 
 impl<'p> Anchor<'p> {
-    fn find(split: &'p SplitDesign<'_>) -> Option<Self> {
+    pub(super) fn find(split: &'p SplitDesign<'_>) -> Option<Self> {
         let layout = split.layout();
         let columns = |t: usize| {
             let term = layout.term(t);
@@ -151,8 +151,13 @@ impl<'p> Anchor<'p> {
         })
     }
 
-    fn n_levels(&self) -> usize {
+    pub(super) fn n_levels(&self) -> usize {
         self.term.layout().n_levels()
+    }
+
+    /// PROTOTYPE(#612): its intercept column, if it has one.
+    pub(super) fn intercept(&self) -> Option<usize> {
+        self.term.layout().intercept_column()
     }
 
     fn level(&self, i: usize) -> usize {
@@ -181,7 +186,7 @@ impl<'p> Anchor<'p> {
     /// coefficients the least-squares `F_Kᵀ x = e_s` over `F`'s nonzero rows `K`. Exact where the
     /// level keeps every slope; where it drops one, exact only if the dropped slope is constant
     /// on the level.
-    fn gauges(&self, p: usize) -> Vec<f64> {
+    pub(super) fn gauges(&self, p: usize) -> Vec<f64> {
         let layout = self.term.layout();
         let v = layout.n_slopes();
         let mut gauge = vec![0.0; self.n_levels() * p * p];
@@ -303,7 +308,7 @@ impl<'a> Gauges<'a> {
     ) -> Result<Self, CoarseDecline> {
         let anchor = Anchor::find(split).ok_or(CoarseDecline::NoCoarseSpace)?;
         let (reached, glued) = spells(rows, &anchor);
-        let (na, nb, p) = (rows.n_levels(), anchor.n_levels(), rows.width());
+        let (na, nb) = (rows.n_levels(), anchor.n_levels());
         let mut parent: Vec<u32> = (0..(na + nb) as u32).collect();
         for (lw, glued) in glued.into_iter().enumerate() {
             for lf in glued {
@@ -357,7 +362,58 @@ impl<'a> Gauges<'a> {
         if touched.iter().all(|comps| comps.len() < 2) {
             return Err(CoarseDecline::NoCoarseSpace);
         }
-        check_budget(&touched, p, count as usize, split.n_obs())?;
+        Self::over(
+            split,
+            rows,
+            anchor,
+            of_anchor,
+            count as usize,
+            touched,
+            true,
+        )
+    }
+
+    /// PROTOTYPE(#612): the gauges over given groups of anchor levels, `of_anchor` numbering each
+    /// level's group (`u32::MAX` for a level without weighted rows).
+    pub(super) fn of_groups(
+        split: &'a SplitDesign<'_>,
+        rows: &'a Rows<'a>,
+        of_anchor: Vec<u32>,
+        count: usize,
+    ) -> Result<Self, CoarseDecline> {
+        let anchor = Anchor::find(split).ok_or(CoarseDecline::NoCoarseSpace)?;
+        let touched: Vec<Vec<u32>> = (0..rows.n_levels())
+            .into_par_iter()
+            .map(|lw| {
+                let mut comps: Vec<u32> = (rows.level(lw).weighted())
+                    .map(|(_, r)| of_anchor[anchor.level(r)])
+                    .filter(|&c| c != u32::MAX)
+                    .collect();
+                comps.sort_unstable();
+                comps.dedup();
+                comps
+            })
+            .collect();
+        Self::over(split, rows, anchor, of_anchor, count, touched, false)
+    }
+
+    /// The gauges of the groups `of_anchor` numbers, normalized over each.
+    fn over(
+        split: &'a SplitDesign<'_>,
+        rows: &'a Rows<'a>,
+        anchor: Anchor<'a>,
+        of_anchor: Vec<u32>,
+        count: usize,
+        touched: Vec<Vec<u32>>,
+        budgeted: bool,
+    ) -> Result<Self, CoarseDecline> {
+        let p = rows.width();
+        let count = count as u32;
+        // PROTOTYPE(#612): groups other than glued components skip the bound, which assumes
+        // a level touches few; the factor's own budget still holds.
+        if budgeted {
+            check_budget(&touched, p, count as usize, split.n_obs())?;
+        }
         let mut gauge = anchor.gauges(p);
         let mut norm2 = vec![0.0f64; count as usize * p];
         for (gauge, &comp) in gauge.chunks_exact(p * p).zip(&of_anchor) {
